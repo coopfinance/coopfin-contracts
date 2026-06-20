@@ -1,7 +1,7 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contractimpl, contracttype, token, Address, Env, Map, Symbol, Vec, String,
+    contract, contractimpl, contracttype, token, Address, Env, Symbol, Vec, String,
 };
 
 /// ─── Storage Keys ────────────────────────────────────────────────────────────
@@ -260,5 +260,215 @@ mod tests {
         let history = client.get_contributions(&member);
         assert_eq!(history.len(), 1);
         assert_eq!(history.get(0).unwrap().amount, amount);
+    }
+
+    // ── initialize edge cases ────────────────────────────────────────────────
+
+    #[test]
+    #[should_panic]
+    fn test_double_initialize() {
+        let (env, client, admin, _, asset) = setup();
+        client.initialize(&admin, &String::from_str(&env, "Test Coop"), &asset);
+        client.initialize(&admin, &String::from_str(&env, "Test Coop 2"), &asset);
+    }
+
+    // ── add_member edge cases ────────────────────────────────────────────────
+
+    #[test]
+    #[should_panic]
+    fn test_add_member_unauthorized() {
+        let (env, client, admin, member, asset) = setup();
+        let non_admin = Address::generate(&env);
+        client.initialize(&admin, &String::from_str(&env, "Test Coop"), &asset);
+        client.add_member(&non_admin, &member);
+    }
+
+    #[test]
+    fn test_add_member_duplicate_is_idempotent() {
+        let (env, client, admin, member, asset) = setup();
+        client.initialize(&admin, &String::from_str(&env, "Test Coop"), &asset);
+        client.add_member(&admin, &member);
+        client.add_member(&admin, &member);
+        assert_eq!(client.get_members().len(), 1);
+    }
+
+    // ── contribute edge cases ────────────────────────────────────────────────
+
+    #[test]
+    #[should_panic]
+    fn test_contribute_zero_amount() {
+        let (env, client, admin, member, asset) = setup();
+        client.initialize(&admin, &String::from_str(&env, "Test Coop"), &asset);
+        client.add_member(&admin, &member);
+        client.contribute(&member, &0i128, &1);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_contribute_negative_amount() {
+        let (env, client, admin, member, asset) = setup();
+        client.initialize(&admin, &String::from_str(&env, "Test Coop"), &asset);
+        client.add_member(&admin, &member);
+        client.contribute(&member, &-1_0000000i128, &1);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_contribute_non_member() {
+        let (env, client, admin, _, asset) = setup();
+        client.initialize(&admin, &String::from_str(&env, "Test Coop"), &asset);
+        let non_member = Address::generate(&env);
+        client.contribute(&non_member, &100_0000000i128, &1);
+    }
+
+    // ── withdraw happy path + edge cases ────────────────────────────────────
+
+    #[test]
+    fn test_withdraw_happy_path() {
+        let (env, client, admin, member, asset) = setup();
+        client.initialize(&admin, &String::from_str(&env, "Test Coop"), &asset);
+        client.add_member(&admin, &member);
+
+        let deposit = 500_0000000i128;
+        client.contribute(&member, &deposit, &1);
+        assert_eq!(client.balance(), deposit);
+
+        let recipient = Address::generate(&env);
+        let withdrawal = 200_0000000i128;
+        client.withdraw(&admin, &recipient, &withdrawal);
+
+        assert_eq!(client.balance(), deposit - withdrawal);
+
+        let token = TokenClient::new(&env, &asset);
+        assert_eq!(token.balance(&recipient), withdrawal);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_withdraw_unauthorized() {
+        let (env, client, admin, member, asset) = setup();
+        client.initialize(&admin, &String::from_str(&env, "Test Coop"), &asset);
+        let non_admin = Address::generate(&env);
+        client.withdraw(&non_admin, &member, &100_0000000i128);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_withdraw_overdraw() {
+        let (env, client, admin, member, asset) = setup();
+        client.initialize(&admin, &String::from_str(&env, "Test Coop"), &asset);
+        client.add_member(&admin, &member);
+
+        let deposit = 100_0000000i128;
+        client.contribute(&member, &deposit, &1);
+
+        let recipient = Address::generate(&env);
+        client.withdraw(&admin, &recipient, &(deposit + 1));
+    }
+
+    // ── query functions ──────────────────────────────────────────────────────
+
+    #[test]
+    fn test_balance_initial_is_zero() {
+        let (env, client, admin, _, asset) = setup();
+        client.initialize(&admin, &String::from_str(&env, "Test Coop"), &asset);
+        assert_eq!(client.balance(), 0);
+    }
+
+    #[test]
+    fn test_get_members_returns_all_added() {
+        let (env, client, admin, member, asset) = setup();
+        client.initialize(&admin, &String::from_str(&env, "Test Coop"), &asset);
+
+        assert_eq!(client.get_members().len(), 0);
+
+        client.add_member(&admin, &member);
+        let members = client.get_members();
+        assert_eq!(members.len(), 1);
+        assert_eq!(members.get(0).unwrap(), member);
+    }
+
+    #[test]
+    fn test_get_contributions_empty_before_any() {
+        let (env, client, admin, member, asset) = setup();
+        client.initialize(&admin, &String::from_str(&env, "Test Coop"), &asset);
+        assert_eq!(client.get_contributions(&member).len(), 0);
+    }
+
+    #[test]
+    fn test_get_contributions_multiple_periods() {
+        let (env, client, admin, member, asset) = setup();
+        client.initialize(&admin, &String::from_str(&env, "Test Coop"), &asset);
+        client.add_member(&admin, &member);
+
+        client.contribute(&member, &100_0000000i128, &1);
+        client.contribute(&member, &250_0000000i128, &2);
+
+        let history = client.get_contributions(&member);
+        assert_eq!(history.len(), 2);
+        assert_eq!(history.get(0).unwrap().amount, 100_0000000i128);
+        assert_eq!(history.get(0).unwrap().period, 1);
+        assert_eq!(history.get(1).unwrap().amount, 250_0000000i128);
+        assert_eq!(history.get(1).unwrap().period, 2);
+    }
+
+    #[test]
+    fn test_get_info_reflects_state() {
+        let (env, client, admin, member, asset) = setup();
+        let group_name = String::from_str(&env, "My Coop");
+        client.initialize(&admin, &group_name, &asset);
+        client.add_member(&admin, &member);
+
+        let amount = 300_0000000i128;
+        client.contribute(&member, &amount, &1);
+
+        let info = client.get_info();
+        assert_eq!(info.member_count, 1);
+        assert_eq!(info.total_contributions, amount);
+        assert_eq!(info.admin, admin);
+        assert_eq!(info.asset, asset);
+        assert!(info.is_active);
+    }
+
+    // ── multi-member scenario ────────────────────────────────────────────────
+
+    #[test]
+    fn test_multiple_members_contribute_independently() {
+        let (env, client, admin, member1, asset) = setup();
+        client.initialize(&admin, &String::from_str(&env, "Test Coop"), &asset);
+
+        let member2 = Address::generate(&env);
+        StellarAssetClient::new(&env, &asset).mint(&member2, &5_000_0000000i128);
+
+        client.add_member(&admin, &member1);
+        client.add_member(&admin, &member2);
+
+        let amount1 = 100_0000000i128;
+        let amount2 = 400_0000000i128;
+        client.contribute(&member1, &amount1, &1);
+        client.contribute(&member2, &amount2, &1);
+
+        assert_eq!(client.balance(), amount1 + amount2);
+        assert_eq!(client.get_members().len(), 2);
+
+        let info = client.get_info();
+        assert_eq!(info.total_contributions, amount1 + amount2);
+        assert_eq!(info.member_count, 2);
+    }
+
+    // ── timestamp recording ──────────────────────────────────────────────────
+
+    #[test]
+    fn test_contribute_records_ledger_timestamp() {
+        let (env, client, admin, member, asset) = setup();
+        client.initialize(&admin, &String::from_str(&env, "Test Coop"), &asset);
+        client.add_member(&admin, &member);
+
+        let ts = 1_700_000_000u64;
+        env.ledger().with_mut(|l| l.timestamp = ts);
+        client.contribute(&member, &100_0000000i128, &1);
+
+        let record = client.get_contributions(&member).get(0).unwrap();
+        assert_eq!(record.timestamp, ts);
     }
 }
