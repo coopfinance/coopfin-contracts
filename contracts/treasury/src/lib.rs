@@ -207,7 +207,8 @@ impl TreasuryContract {
         while i < contributions.len() {
             let (member, amount, period) = contributions.get(i).unwrap();
 
-            if !members.contains(member) {
+            // ✅ CORREGIDO: Pasar &member para evitar el move
+            if !members.contains(&member) {
                 env.events().publish(
                     (Symbol::new(&env, "skipped_non_member"),),
                     (member, "not a member"),
