@@ -157,7 +157,7 @@ impl TreasuryContract {
         // 5. Eliminar el miembro del vector (reconstruir el vector)
         let mut new_members: Vec<Address> = Vec::new(&env);
         for m in members.iter() {
-            if m != &member {
+            if m != member {
                 new_members.push_back(m.clone());
             }
         }
