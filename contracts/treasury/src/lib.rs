@@ -204,37 +204,40 @@ impl TreasuryContract {
         let asset: Address = env.storage().instance().get(&DataKey::AssetAddress).unwrap();
         let token_client = token::Client::new(&env, &asset);
 
-        // Iterar sobre las contribuciones
-        for i in 0..contributions.len() {
+        // Iterate using a while loop to handle references properly
+        let mut i: u32 = 0;
+        while i < contributions.len() {
             let (member, amount, period) = contributions.get(i).unwrap();
 
-            // Verificar si el miembro existe
+            // Check if member exists
             if !members.contains(member) {
                 env.events().publish(
                     (Symbol::new(&env, "skipped_non_member"),),
                     (member, "not a member"),
                 );
+                i += 1;
                 continue;
             }
 
-            // Verificar monto positivo
-            if *amount <= 0 {
+            // Check positive amount
+            if amount <= &0i128 {
                 env.events().publish(
                     (Symbol::new(&env, "skipped_invalid_amount"),),
                     (member, "amount must be positive"),
                 );
+                i += 1;
                 continue;
             }
 
-            // Transferir tokens del miembro al contrato
+            // Transfer tokens from member to contract
             token_client.transfer(member, &env.current_contract_address(), amount);
 
-            // Registrar contribución
+            // Record contribution - clone the values to avoid reference issues
             let record = ContributionRecord {
                 member: member.clone(),
-                amount: *amount,
+                amount: amount.clone(),
                 timestamp: env.ledger().timestamp(),
-                period: *period,
+                period: period.clone(),
             };
 
             let mut history: Vec<ContributionRecord> = env
@@ -246,22 +249,23 @@ impl TreasuryContract {
                 .set(&DataKey::Contributions(member.clone()), &history);
 
             valid_count += 1;
-            total_amount += *amount;
+            total_amount += amount.clone();
+
+            i += 1;
         }
 
-        // Actualizar el total general de contribuciones
+        // Update total contributions
         let current_total: i128 = env.storage().instance()
             .get(&DataKey::TotalContributions).unwrap_or(0);
         env.storage().instance()
             .set(&DataKey::TotalContributions, &(current_total + total_amount));
 
-        // Emitir evento de resumen del lote
+        // Emit summary event
         env.events().publish(
             (Symbol::new(&env, "batch_contribution"),),
             (valid_count, total_amount, env.ledger().timestamp()),
         );
 
-        // Extender TTL del storage de instancia
         env.storage().instance().extend_ttl(100, 100);
 
         (valid_count, total_amount)
