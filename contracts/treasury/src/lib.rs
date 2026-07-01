@@ -40,6 +40,20 @@ pub struct GroupInfo {
     pub is_active: bool,
 }
 
+/// Complete snapshot of a single member, aggregated in one read-only call so the
+/// frontend dashboard does not have to combine `get_members` and
+/// `get_contributions` client-side (multiple RPC round-trips per member).
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct MemberSummary {
+    pub address: Address,
+    pub is_member: bool,
+    pub total_contributed: i128,
+    pub contribution_count: u32,
+    pub last_period: u32,
+    pub last_contributed_at: u64,
+}
+
 /// ─── Contract ────────────────────────────────────────────────────────────────
 
 #[contract]
@@ -189,6 +203,52 @@ impl TreasuryContract {
                 .get(&DataKey::TotalContributions).unwrap_or(0),
             member_count: members.len(),
             is_active: env.storage().instance().get(&DataKey::IsActive).unwrap_or(true),
+        }
+    }
+
+    /// Aggregate a member's full picture in a single read-only call.
+    ///
+    /// Combines membership status with stats derived from the member's stored
+    /// contribution history: total contributed, number of contributions, and the
+    /// period / ledger timestamp of the most recent one. This lets the dashboard
+    /// render a member row with one RPC instead of `get_members` +
+    /// `get_contributions`.
+    ///
+    /// Read-only — no auth required. An unknown address (or a member who has not
+    /// contributed yet) returns zeroed stats and never panics; `is_member`
+    /// reflects whether the address is in the members list regardless.
+    pub fn get_member_summary(env: Env, member: Address) -> MemberSummary {
+        let members: Vec<Address> = env
+            .storage().instance()
+            .get(&DataKey::Members)
+            .unwrap_or(Vec::new(&env));
+        let is_member = members.contains(&member);
+
+        let history: Vec<ContributionRecord> = env
+            .storage().persistent()
+            .get(&DataKey::Contributions(member.clone()))
+            .unwrap_or(Vec::new(&env));
+
+        let contribution_count = history.len();
+        let mut total_contributed: i128 = 0;
+        for record in history.iter() {
+            total_contributed += record.amount;
+        }
+
+        let (last_period, last_contributed_at) = if contribution_count > 0 {
+            let last = history.get(contribution_count - 1).unwrap();
+            (last.period, last.timestamp)
+        } else {
+            (0, 0)
+        };
+
+        MemberSummary {
+            address: member,
+            is_member,
+            total_contributed,
+            contribution_count,
+            last_period,
+            last_contributed_at,
         }
     }
 
@@ -470,5 +530,57 @@ mod tests {
 
         let record = client.get_contributions(&member).get(0).unwrap();
         assert_eq!(record.timestamp, ts);
+    }
+
+    // ── get_member_summary ───────────────────────────────────────────────────
+
+    #[test]
+    fn test_get_member_summary_known_member_with_contributions() {
+        let (env, client, admin, member, asset) = setup();
+        client.initialize(&admin, &String::from_str(&env, "Test Coop"), &asset);
+        client.add_member(&admin, &member);
+
+        let ts = 1_700_000_500u64;
+        env.ledger().with_mut(|l| l.timestamp = ts);
+        client.contribute(&member, &100_0000000i128, &1);
+        client.contribute(&member, &250_0000000i128, &3);
+
+        let summary = client.get_member_summary(&member);
+        assert_eq!(summary.address, member);
+        assert!(summary.is_member);
+        assert_eq!(summary.total_contributed, 350_0000000i128);
+        assert_eq!(summary.contribution_count, 2);
+        // Reflects the most recent contribution.
+        assert_eq!(summary.last_period, 3);
+        assert_eq!(summary.last_contributed_at, ts);
+    }
+
+    #[test]
+    fn test_get_member_summary_unknown_address_no_panic() {
+        let (env, client, admin, _, asset) = setup();
+        client.initialize(&admin, &String::from_str(&env, "Test Coop"), &asset);
+
+        let stranger = Address::generate(&env);
+        let summary = client.get_member_summary(&stranger);
+        assert_eq!(summary.address, stranger);
+        assert!(!summary.is_member);
+        assert_eq!(summary.total_contributed, 0);
+        assert_eq!(summary.contribution_count, 0);
+        assert_eq!(summary.last_period, 0);
+        assert_eq!(summary.last_contributed_at, 0);
+    }
+
+    #[test]
+    fn test_get_member_summary_member_without_contributions() {
+        let (env, client, admin, member, asset) = setup();
+        client.initialize(&admin, &String::from_str(&env, "Test Coop"), &asset);
+        client.add_member(&admin, &member);
+
+        let summary = client.get_member_summary(&member);
+        assert!(summary.is_member);
+        assert_eq!(summary.total_contributed, 0);
+        assert_eq!(summary.contribution_count, 0);
+        assert_eq!(summary.last_period, 0);
+        assert_eq!(summary.last_contributed_at, 0);
     }
 }
