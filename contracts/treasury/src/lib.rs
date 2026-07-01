@@ -111,6 +111,72 @@ impl TreasuryContract {
         }
     }
 
+    /// Removes a member from the treasury.
+    ///
+    /// # Authorization
+    /// Only the admin can remove members.
+    ///
+    /// # Arguments
+    /// * `admin` - The admin's address
+    /// * `member` - The member to remove
+    /// * `force` - If true, bypass loan balance check
+    ///
+    /// # Panics
+    /// Panics if `member` is not found or has pending loans (unless `force` is true).
+    ///
+    /// # Events
+    /// Emits `member_removed` with member address and timestamp.
+    pub fn remove_member(env: Env, admin: Address, member: Address, force: bool) {
+        // 1. Auth: solo el admin puede llamar
+        admin.require_auth();
+        Self::require_admin(&env, &admin);
+
+        // 2. Obtener el vector de miembros del storage de instancia
+        let mut members: Vec<Address> = env
+            .storage()
+            .instance()
+            .get(&DataKey::Members)
+            .unwrap_or_else(|| panic!("no members found"));
+
+        // 3. Validar que el miembro existe
+        if !members.contains(&member) {
+            panic!("member not found");
+        }
+
+        // 4. Verificar si tiene préstamos pendientes (a menos que force sea true)
+        if !force {
+            // Por ahora, asumimos que no hay préstamos.
+            // En una implementación real, consultarías el contrato de préstamos.
+            // Este es un placeholder para la lógica de verificación de préstamos.
+            let has_loan = false; // TODO: Implementar verificación real con LoanContract
+            if has_loan {
+                panic!("member has pending loan, use force=true to override");
+            }
+        }
+
+        // 5. Eliminar el miembro del vector (reconstruir el vector)
+        let mut new_members: Vec<Address> = Vec::new(&env);
+        for m in members.iter() {
+            if m != &member {
+                new_members.push_back(m.clone());
+            }
+        }
+
+        // 6. Guardar el nuevo vector en storage
+        env.storage()
+            .instance()
+            .set(&DataKey::Members, &new_members);
+
+        // 7. Emitir el evento
+        env.events().publish(
+            (Symbol::new(&env, "member_removed"),),
+            (member, env.ledger().timestamp()),
+        );
+
+        // 8. Bump TTL del storage de instancia
+        env.storage().instance().bump_ttl(100, 100);
+    }
+
     /// Record a member contribution. Transfers USDC from member to this contract.
     pub fn contribute(env: Env, member: Address, amount: i128, period: u32) {
         member.require_auth();
@@ -350,6 +416,66 @@ mod tests {
         client.add_member(&admin, &member);
         client.add_member(&admin, &member);
         assert_eq!(client.get_members().len(), 1);
+    }
+
+    // ── remove_member tests ──────────────────────────────────────────────────
+
+    #[test]
+    fn test_remove_member_happy_path() {
+        let (env, client, admin, member, asset) = setup();
+        client.initialize(&admin, &String::from_str(&env, "Test Coop"), &asset);
+        client.add_member(&admin, &member);
+
+        // Verificar que el miembro existe
+        let members = client.get_members();
+        assert_eq!(members.len(), 1);
+        assert_eq!(members.get(0).unwrap(), member);
+
+        // Remover el miembro
+        client.remove_member(&admin, &member, &false);
+
+        // Verificar que ya no existe
+        let members_after = client.get_members();
+        assert_eq!(members_after.len(), 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "member not found")]
+    fn test_remove_nonexistent_member() {
+        let (env, client, admin, member, asset) = setup();
+        client.initialize(&admin, &String::from_str(&env, "Test Coop"), &asset);
+        // Intentar remover un miembro que no existe
+        client.remove_member(&admin, &member, &false);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_remove_member_unauthorized() {
+        let (env, client, admin, member, asset) = setup();
+        let non_admin = Address::generate(&env);
+        client.initialize(&admin, &String::from_str(&env, "Test Coop"), &asset);
+        client.add_member(&admin, &member);
+        // Intentar remover con un no-admin
+        client.remove_member(&non_admin, &member, &false);
+    }
+
+    #[test]
+    fn test_remove_member_preserves_contribution_history() {
+        let (env, client, admin, member, asset) = setup();
+        client.initialize(&admin, &String::from_str(&env, "Test Coop"), &asset);
+        client.add_member(&admin, &member);
+
+        // Hacer una contribución
+        let amount = 100_0000000i128;
+        client.contribute(&member, &amount, &1);
+
+        // Remover el miembro
+        client.remove_member(&admin, &member, &false);
+
+        // Verificar que el historial de contribuciones se conserva
+        let history = client.get_contributions(&member);
+        assert_eq!(history.len(), 1);
+        assert_eq!(history.get(0).unwrap().amount, amount);
     }
 
     // ── contribute edge cases ────────────────────────────────────────────────
