@@ -185,6 +185,7 @@ impl TreasuryContract {
         );
     }
 
+    /// Processes multiple member contributions in a single transaction.
     pub fn batch_contribute(
         env: Env,
         admin: Address,
@@ -203,9 +204,11 @@ impl TreasuryContract {
         let asset: Address = env.storage().instance().get(&DataKey::AssetAddress).unwrap();
         let token_client = token::Client::new(&env, &asset);
 
+        // Iterar sobre las contribuciones
         for i in 0..contributions.len() {
             let (member, amount, period) = contributions.get(i).unwrap();
 
+            // Verificar si el miembro existe
             if !members.contains(member) {
                 env.events().publish(
                     (Symbol::new(&env, "skipped_non_member"),),
@@ -214,6 +217,7 @@ impl TreasuryContract {
                 continue;
             }
 
+            // Verificar monto positivo
             if *amount <= 0 {
                 env.events().publish(
                     (Symbol::new(&env, "skipped_invalid_amount"),),
@@ -225,6 +229,7 @@ impl TreasuryContract {
             // Transferir tokens del miembro al contrato
             token_client.transfer(member, &env.current_contract_address(), amount);
 
+            // Registrar contribución
             let record = ContributionRecord {
                 member: member.clone(),
                 amount: *amount,
@@ -244,16 +249,19 @@ impl TreasuryContract {
             total_amount += *amount;
         }
 
+        // Actualizar el total general de contribuciones
         let current_total: i128 = env.storage().instance()
             .get(&DataKey::TotalContributions).unwrap_or(0);
         env.storage().instance()
             .set(&DataKey::TotalContributions, &(current_total + total_amount));
 
+        // Emitir evento de resumen del lote
         env.events().publish(
             (Symbol::new(&env, "batch_contribution"),),
             (valid_count, total_amount, env.ledger().timestamp()),
         );
 
+        // Extender TTL del storage de instancia
         env.storage().instance().extend_ttl(100, 100);
 
         (valid_count, total_amount)
