@@ -64,6 +64,18 @@ impl VotingContract {
         env.storage().instance().set(&DataKey::Proposals, &Vec::<Proposal>::new(&env));
     }
 
+    /// Transfer admin rights to a new address.
+    pub fn transfer_admin(env: Env, current_admin: Address, new_admin: Address) {
+        current_admin.require_auth();
+        Self::require_admin(&env, &current_admin);
+
+        env.storage().instance().set(&DataKey::Admin, &new_admin);
+        env.events().publish(
+            (Symbol::new(&env, "admin_transferred"),),
+            (current_admin, new_admin),
+        );
+    }
+
     /// Create a new governance proposal.
     pub fn create_proposal(
         env: Env,
@@ -204,10 +216,55 @@ impl VotingContract {
             .unwrap_or(Map::new(&env))
     }
 
+    fn require_admin(env: &Env, caller: &Address) {
+        let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        if admin != *caller { panic!("unauthorized"); }
+    }
+
     fn find_proposal_idx(proposals: &Vec<Proposal>, id: u32) -> u32 {
         for i in 0..proposals.len() {
             if proposals.get(i).unwrap().id == id { return i; }
         }
         panic!("proposal not found");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use soroban_sdk::testutils::Address as _;
+    use soroban_sdk::Env;
+
+    fn setup() -> (Env, VotingContractClient<'static>, Address) {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, VotingContract);
+        let client = VotingContractClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        let treasury = Address::generate(&env);
+        client.initialize(&admin, &treasury);
+
+        (env, client, admin)
+    }
+
+    #[test]
+    fn test_transfer_admin_allows_new_admin_to_transfer_again() {
+        let (env, client, admin) = setup();
+        let new_admin = Address::generate(&env);
+        let final_admin = Address::generate(&env);
+
+        client.transfer_admin(&admin, &new_admin);
+        client.transfer_admin(&new_admin, &final_admin);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_old_admin_cannot_call_admin_only_after_transfer() {
+        let (env, client, admin) = setup();
+        let new_admin = Address::generate(&env);
+        let final_admin = Address::generate(&env);
+        client.transfer_admin(&admin, &new_admin);
+
+        client.transfer_admin(&admin, &final_admin);
     }
 }
