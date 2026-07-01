@@ -4,6 +4,14 @@ use soroban_sdk::{
     contract, contractimpl, contracttype, token, Address, Env, Symbol, Vec, String,
 };
 
+// ─── TTL Constants ────────────────────────────────────────────────────────────
+// Instance storage TTL: bump if below 100 ledgers (~5 days), extend to 10,000 (~500 days).
+// Persistent storage TTL: bump if below 100 ledgers, extend to 10,000.
+const INSTANCE_TTL_THRESHOLD: u32 = 100;
+const INSTANCE_TTL_EXTEND_TO: u32 = 10_000;
+const PERSISTENT_TTL_THRESHOLD: u32 = 100;
+const PERSISTENT_TTL_EXTEND_TO: u32 = 10_000;
+
 /// ─── Storage Keys ────────────────────────────────────────────────────────────
 
 #[contracttype]
@@ -61,6 +69,16 @@ pub struct TreasuryContract;
 
 #[contractimpl]
 impl TreasuryContract {
+    /// Extend instance storage TTL to prevent data expiration.
+    ///
+    /// Called at the start of every state-changing function. Uses threshold=100
+    /// and extend_to=10,000 ledgers (~500 days) to keep instance data alive.
+    fn bump_instance(env: &Env) {
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
+    }
+
     /// Initialize a new cooperative treasury group.
     pub fn initialize(
         env: Env,
@@ -81,6 +99,8 @@ impl TreasuryContract {
         env.storage().instance().set(&DataKey::IsActive, &true);
         env.storage().instance().set(&DataKey::Members, &Vec::<Address>::new(&env));
 
+        Self::bump_instance(&env);
+
         GroupInfo {
             name: group_name,
             admin,
@@ -93,6 +113,7 @@ impl TreasuryContract {
 
     /// Add a new member to the cooperative.
     pub fn add_member(env: Env, admin: Address, member: Address) {
+        Self::bump_instance(&env);
         admin.require_auth();
         Self::require_admin(&env, &admin);
 
@@ -113,6 +134,7 @@ impl TreasuryContract {
 
     /// Record a member contribution. Transfers USDC from member to this contract.
     pub fn contribute(env: Env, member: Address, amount: i128, period: u32) {
+        Self::bump_instance(&env);
         member.require_auth();
         Self::require_member(&env, &member);
 
@@ -142,6 +164,14 @@ impl TreasuryContract {
         env.storage().persistent()
             .set(&DataKey::Contributions(member.clone()), &history);
 
+        // Extend persistent storage TTL for this member's contribution history.
+        // threshold=100 ledgers (~5 days), extend_to=10,000 ledgers (~500 days).
+        env.storage().persistent().extend_ttl(
+            &DataKey::Contributions(member.clone()),
+            PERSISTENT_TTL_THRESHOLD,
+            PERSISTENT_TTL_EXTEND_TO,
+        );
+
         // Update total
         let total: i128 = env.storage().instance()
             .get(&DataKey::TotalContributions).unwrap_or(0);
@@ -156,6 +186,7 @@ impl TreasuryContract {
 
     /// Withdraw funds — only callable by admin (e.g. for approved loans or expenses).
     pub fn withdraw(env: Env, admin: Address, to: Address, amount: i128) {
+        Self::bump_instance(&env);
         admin.require_auth();
         Self::require_admin(&env, &admin);
 
@@ -207,16 +238,6 @@ impl TreasuryContract {
     }
 
     /// Aggregate a member's full picture in a single read-only call.
-    ///
-    /// Combines membership status with stats derived from the member's stored
-    /// contribution history: total contributed, number of contributions, and the
-    /// period / ledger timestamp of the most recent one. This lets the dashboard
-    /// render a member row with one RPC instead of `get_members` +
-    /// `get_contributions`.
-    ///
-    /// Read-only — no auth required. An unknown address (or a member who has not
-    /// contributed yet) returns zeroed stats and never panics; `is_member`
-    /// reflects whether the address is in the members list regardless.
     pub fn get_member_summary(env: Env, member: Address) -> MemberSummary {
         let members: Vec<Address> = env
             .storage().instance()
@@ -322,8 +343,6 @@ mod tests {
         assert_eq!(history.get(0).unwrap().amount, amount);
     }
 
-    // ── initialize edge cases ────────────────────────────────────────────────
-
     #[test]
     #[should_panic]
     fn test_double_initialize() {
@@ -331,8 +350,6 @@ mod tests {
         client.initialize(&admin, &String::from_str(&env, "Test Coop"), &asset);
         client.initialize(&admin, &String::from_str(&env, "Test Coop 2"), &asset);
     }
-
-    // ── add_member edge cases ────────────────────────────────────────────────
 
     #[test]
     #[should_panic]
@@ -351,8 +368,6 @@ mod tests {
         client.add_member(&admin, &member);
         assert_eq!(client.get_members().len(), 1);
     }
-
-    // ── contribute edge cases ────────────────────────────────────────────────
 
     #[test]
     #[should_panic]
@@ -380,8 +395,6 @@ mod tests {
         let non_member = Address::generate(&env);
         client.contribute(&non_member, &100_0000000i128, &1);
     }
-
-    // ── withdraw happy path + edge cases ────────────────────────────────────
 
     #[test]
     fn test_withdraw_happy_path() {
@@ -425,8 +438,6 @@ mod tests {
         let recipient = Address::generate(&env);
         client.withdraw(&admin, &recipient, &(deposit + 1));
     }
-
-    // ── query functions ──────────────────────────────────────────────────────
 
     #[test]
     fn test_balance_initial_is_zero() {
@@ -490,8 +501,6 @@ mod tests {
         assert!(info.is_active);
     }
 
-    // ── multi-member scenario ────────────────────────────────────────────────
-
     #[test]
     fn test_multiple_members_contribute_independently() {
         let (env, client, admin, member1, asset) = setup();
@@ -516,8 +525,6 @@ mod tests {
         assert_eq!(info.member_count, 2);
     }
 
-    // ── timestamp recording ──────────────────────────────────────────────────
-
     #[test]
     fn test_contribute_records_ledger_timestamp() {
         let (env, client, admin, member, asset) = setup();
@@ -531,8 +538,6 @@ mod tests {
         let record = client.get_contributions(&member).get(0).unwrap();
         assert_eq!(record.timestamp, ts);
     }
-
-    // ── get_member_summary ───────────────────────────────────────────────────
 
     #[test]
     fn test_get_member_summary_known_member_with_contributions() {
@@ -550,7 +555,6 @@ mod tests {
         assert!(summary.is_member);
         assert_eq!(summary.total_contributed, 350_0000000i128);
         assert_eq!(summary.contribution_count, 2);
-        // Reflects the most recent contribution.
         assert_eq!(summary.last_period, 3);
         assert_eq!(summary.last_contributed_at, ts);
     }

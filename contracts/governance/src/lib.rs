@@ -1,8 +1,13 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contractimpl, contracttype, Address, Env, Symbol, Vec,
+    contract, contractimpl, contracttype, Address, Env, Symbol,
 };
+
+// ─── TTL Constants ────────────────────────────────────────────────────────────
+// Instance storage TTL: bump if below 100 ledgers (~5 days), extend to 10,000 (~500 days).
+const INSTANCE_TTL_THRESHOLD: u32 = 100;
+const INSTANCE_TTL_EXTEND_TO: u32 = 10_000;
 
 #[contracttype]
 #[derive(Clone)]
@@ -31,6 +36,16 @@ pub struct GovernanceContract;
 
 #[contractimpl]
 impl GovernanceContract {
+    /// Extend instance storage TTL to prevent data expiration.
+    ///
+    /// Called at the start of every state-changing function. Uses threshold=100
+    /// and extend_to=10,000 ledgers (~500 days) to keep instance data alive.
+    fn bump_instance(env: &Env) {
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
+    }
+
     pub fn initialize(
         env: Env,
         admin: Address,
@@ -38,6 +53,7 @@ impl GovernanceContract {
         loan: Address,
         treasury: Address,
     ) {
+        Self::bump_instance(&env);
         admin.require_auth();
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::VotingContract, &voting);
@@ -58,6 +74,7 @@ impl GovernanceContract {
     }
 
     pub fn update_rules(env: Env, admin: Address, rules: CoopRules) {
+        Self::bump_instance(&env);
         admin.require_auth();
         Self::require_admin(&env, &admin);
         env.storage().instance().set(&DataKey::Rules, &rules);

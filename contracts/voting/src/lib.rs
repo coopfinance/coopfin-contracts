@@ -4,6 +4,15 @@ use soroban_sdk::{
     contract, contractimpl, contracttype, Address, Env, Map, Symbol, Vec, String,
 };
 
+// ─── TTL Constants ────────────────────────────────────────────────────────────
+// Instance storage TTL: bump if below 100 ledgers (~5 days), extend to 10,000 (~500 days).
+// Persistent storage TTL: bump if below 100 ledgers, extend to 10,000.
+// Proposal vote maps are stored in persistent storage and must outlive voting periods.
+const INSTANCE_TTL_THRESHOLD: u32 = 100;
+const INSTANCE_TTL_EXTEND_TO: u32 = 10_000;
+const PERSISTENT_TTL_THRESHOLD: u32 = 100;
+const PERSISTENT_TTL_EXTEND_TO: u32 = 10_000;
+
 #[contracttype]
 #[derive(Clone)]
 pub enum DataKey {
@@ -56,7 +65,18 @@ pub struct VotingContract;
 
 #[contractimpl]
 impl VotingContract {
+    /// Extend instance storage TTL to prevent data expiration.
+    ///
+    /// Called at the start of every state-changing function. Uses threshold=100
+    /// and extend_to=10,000 ledgers (~500 days) to keep instance data alive.
+    fn bump_instance(env: &Env) {
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
+    }
+
     pub fn initialize(env: Env, admin: Address, treasury: Address) {
+        Self::bump_instance(&env);
         admin.require_auth();
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::TreasuryContract, &treasury);
@@ -75,6 +95,7 @@ impl VotingContract {
         quorum: u32,
         payload: String,
     ) -> u32 {
+        Self::bump_instance(&env);
         proposer.require_auth();
 
         let counter: u32 = env.storage().instance()
@@ -109,6 +130,14 @@ impl VotingContract {
         env.storage().persistent()
             .set(&DataKey::Votes(id), &Map::<Address, bool>::new(&env));
 
+        // Extend persistent storage TTL for the vote map.
+        // threshold=100 ledgers (~5 days), extend_to=10,000 ledgers (~500 days).
+        env.storage().persistent().extend_ttl(
+            &DataKey::Votes(id),
+            PERSISTENT_TTL_THRESHOLD,
+            PERSISTENT_TTL_EXTEND_TO,
+        );
+
         env.events().publish(
             (Symbol::new(&env, "proposal_created"),),
             (id, proposer),
@@ -118,6 +147,7 @@ impl VotingContract {
 
     /// Member casts a vote on a proposal.
     pub fn vote(env: Env, voter: Address, proposal_id: u32, approve: bool) {
+        Self::bump_instance(&env);
         voter.require_auth();
 
         let mut proposals: Vec<Proposal> = env.storage().instance()
@@ -143,6 +173,14 @@ impl VotingContract {
         votes.set(voter.clone(), approve);
         env.storage().persistent().set(&DataKey::Votes(proposal_id), &votes);
 
+        // Extend persistent storage TTL for this proposal's vote map
+        // after writing new vote data.
+        env.storage().persistent().extend_ttl(
+            &DataKey::Votes(proposal_id),
+            PERSISTENT_TTL_THRESHOLD,
+            PERSISTENT_TTL_EXTEND_TO,
+        );
+
         if approve {
             proposal.votes_for += 1;
         } else {
@@ -160,6 +198,8 @@ impl VotingContract {
 
     /// Finalize a proposal after deadline.
     pub fn finalize(env: Env, proposal_id: u32) -> ProposalStatus {
+        Self::bump_instance(&env);
+
         let mut proposals: Vec<Proposal> = env.storage().instance()
             .get(&DataKey::Proposals).unwrap();
         let idx = Self::find_proposal_idx(&proposals, proposal_id);
