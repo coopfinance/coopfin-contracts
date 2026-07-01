@@ -285,7 +285,11 @@ mod tests {
 
         // Fund borrower
         StellarAssetClient::new(&env, &asset_address)
-            .mint(&borrower, &10_000_0000000i128);
+            .mint(&borrower, &100_000_0000000i128);
+
+        // Fund the contract itself (treasury) for disbursement
+        StellarAssetClient::new(&env, &asset_address)
+            .mint(&contract_id, &100_000_0000000i128);
 
         // Initialize contract
         client.initialize(&admin, &admin, &asset_address);
@@ -298,12 +302,11 @@ mod tests {
         client: &LoanContractClient<'static>,
         admin: &Address,
         borrower: &Address,
-        asset: &Address,
     ) -> u32 {
         // Request loan
         let loan_id = client.request_loan(
             borrower,
-            &1_000_0000000i128,
+            &10_000_0000000i128,
             &String::from_str(env, "Test loan"),
             &30, // 30 days
         );
@@ -316,14 +319,24 @@ mod tests {
 
     #[test]
     fn test_initialize() {
+        // setup() already initializes, so we just verify no panic
         let (env, client, admin, _, asset) = setup();
-        let info = client.initialize(&admin, &admin, &asset);
-        // No panic means success
+        // Verify contract is initialized by checking loans exist
+        let loans = client.get_loans();
+        assert_eq!(loans.len(), 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "already initialized")]
+    fn test_double_initialize() {
+        let (env, client, admin, _, asset) = setup();
+        // Try to initialize again
+        client.initialize(&admin, &admin, &asset);
     }
 
     #[test]
     fn test_request_loan() {
-        let (env, client, admin, borrower, asset) = setup();
+        let (env, client, _, borrower, _) = setup();
         let loan_id = client.request_loan(
             &borrower,
             &1_000_0000000i128,
@@ -335,10 +348,10 @@ mod tests {
 
     #[test]
     fn test_approve_loan() {
-        let (env, client, admin, borrower, asset) = setup();
+        let (env, client, admin, borrower, _) = setup();
         let loan_id = client.request_loan(
             &borrower,
-            &1_000_0000000i128,
+            &10_000_0000000i128,
             &String::from_str(&env, "Test loan"),
             &30,
         );
@@ -349,11 +362,15 @@ mod tests {
 
     #[test]
     fn test_repay_loan() {
-        let (env, client, admin, borrower, asset) = setup();
-        let loan_id = create_approved_loan(&env, &client, &admin, &borrower, &asset);
+        let (env, client, admin, borrower, _) = setup();
+        let loan_id = create_approved_loan(&env, &client, &admin, &borrower);
+
+        // Calculate total due (5% interest)
+        let principal = 10_000_0000000i128;
+        let interest = principal * 500 / 10_000;
+        let total_due = principal + interest;
 
         // Repay loan
-        let total_due = 1_000_0000000i128 + (1_000_0000000i128 * 500 / 10_000); // 5% interest
         client.repay(&borrower, &loan_id, &total_due);
 
         let loan = client.get_loan(&loan_id);
@@ -364,10 +381,10 @@ mod tests {
 
     #[test]
     fn test_mark_defaulted_success() {
-        let (env, client, admin, borrower, asset) = setup();
-        let loan_id = create_approved_loan(&env, &client, &admin, &borrower, &asset);
+        let (env, client, admin, borrower, _) = setup();
+        let loan_id = create_approved_loan(&env, &client, &admin, &borrower);
 
-        // Advance time past repayment_due
+        // Advance time past repayment_due (30 days)
         env.ledger().with_mut(|l| l.timestamp = 1_700_000_000);
 
         // Mark as defaulted
@@ -381,8 +398,8 @@ mod tests {
     #[test]
     #[should_panic(expected = "loan is not past due")]
     fn test_mark_defaulted_not_past_due() {
-        let (env, client, admin, borrower, asset) = setup();
-        let loan_id = create_approved_loan(&env, &client, &admin, &borrower, &asset);
+        let (env, client, admin, borrower, _) = setup();
+        let loan_id = create_approved_loan(&env, &client, &admin, &borrower);
 
         // Don't advance time -> loan is not past due
         client.mark_defaulted(&loan_id);
@@ -391,11 +408,15 @@ mod tests {
     #[test]
     #[should_panic(expected = "loan must be in Approved status")]
     fn test_mark_defaulted_already_repaid() {
-        let (env, client, admin, borrower, asset) = setup();
-        let loan_id = create_approved_loan(&env, &client, &admin, &borrower, &asset);
+        let (env, client, admin, borrower, _) = setup();
+        let loan_id = create_approved_loan(&env, &client, &admin, &borrower);
+
+        // Calculate total due (5% interest)
+        let principal = 10_000_0000000i128;
+        let interest = principal * 500 / 10_000;
+        let total_due = principal + interest;
 
         // Repay the loan
-        let total_due = 1_000_0000000i128 + (1_000_0000000i128 * 500 / 10_000);
         client.repay(&borrower, &loan_id, &total_due);
 
         // Advance time
@@ -417,7 +438,7 @@ mod tests {
     #[test]
     #[should_panic]
     fn test_approve_nonexistent_loan() {
-        let (env, client, admin, _, asset) = setup();
+        let (env, client, admin, _, _) = setup();
         client.approve_loan(&admin, &999);
     }
 
