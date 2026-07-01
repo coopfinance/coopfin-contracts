@@ -185,6 +185,7 @@ impl TreasuryContract {
         );
     }
 
+    /// Processes multiple member contributions in a single transaction.
     pub fn batch_contribute(
         env: Env,
         admin: Address,
@@ -216,7 +217,7 @@ impl TreasuryContract {
                 continue;
             }
 
-            if *amount <= 0i128 {
+            if amount <= 0i128 {
                 env.events().publish(
                     (Symbol::new(&env, "skipped_invalid_amount"),),
                     (member, "amount must be positive"),
@@ -225,13 +226,13 @@ impl TreasuryContract {
                 continue;
             }
 
-            token_client.transfer(member, &env.current_contract_address(), amount);
+            token_client.transfer(member, &env.current_contract_address(), &amount);
 
             let record = ContributionRecord {
                 member: member.clone(),
-                amount: *amount,
+                amount: amount,
                 timestamp: env.ledger().timestamp(),
-                period: *period,
+                period: period,
             };
 
             let mut history: Vec<ContributionRecord> = env
@@ -243,7 +244,7 @@ impl TreasuryContract {
                 .set(&DataKey::Contributions(member.clone()), &history);
 
             valid_count += 1;
-            total_amount += *amount;
+            total_amount += amount;
 
             i += 1;
         }
