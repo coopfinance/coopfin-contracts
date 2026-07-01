@@ -127,34 +127,26 @@ impl TreasuryContract {
     /// # Events
     /// Emits `member_removed` with member address and timestamp.
     pub fn remove_member(env: Env, admin: Address, member: Address, force: bool) {
-        // 1. Auth: solo el admin puede llamar
         admin.require_auth();
         Self::require_admin(&env, &admin);
 
-        // 2. Obtener el vector de miembros del storage de instancia
         let members: Vec<Address> = env
             .storage()
             .instance()
             .get(&DataKey::Members)
             .unwrap_or_else(|| panic!("no members found"));
 
-        // 3. Validar que el miembro existe
         if !members.contains(&member) {
             panic!("member not found");
         }
 
-        // 4. Verificar si tiene préstamos pendientes (a menos que force sea true)
         if !force {
-            // Por ahora, asumimos que no hay préstamos.
-            // En una implementación real, consultarías el contrato de préstamos.
-            // Este es un placeholder para la lógica de verificación de préstamos.
             let has_loan = false; // TODO: Implementar verificación real con LoanContract
             if has_loan {
                 panic!("member has pending loan, use force=true to override");
             }
         }
 
-        // 5. Eliminar el miembro del vector (reconstruir el vector)
         let mut new_members: Vec<Address> = Vec::new(&env);
         for m in members.iter() {
             if m != member {
@@ -162,18 +154,15 @@ impl TreasuryContract {
             }
         }
 
-        // 6. Guardar el nuevo vector en storage
         env.storage()
             .instance()
             .set(&DataKey::Members, &new_members);
 
-        // 7. Emitir el evento
         env.events().publish(
             (Symbol::new(&env, "member_removed"),),
             (member, env.ledger().timestamp()),
         );
 
-        // 8. Extender TTL del storage de instancia (100 ledgers)
         env.storage().instance().extend_ttl(100, 100);
     }
 
@@ -189,10 +178,8 @@ impl TreasuryContract {
         let asset: Address = env.storage().instance().get(&DataKey::AssetAddress).unwrap();
         let token_client = token::Client::new(&env, &asset);
 
-        // Transfer from member wallet to this contract
         token_client.transfer(&member, &env.current_contract_address(), &amount);
 
-        // Record contribution
         let record = ContributionRecord {
             member: member.clone(),
             amount,
@@ -208,7 +195,6 @@ impl TreasuryContract {
         env.storage().persistent()
             .set(&DataKey::Contributions(member.clone()), &history);
 
-        // Update total
         let total: i128 = env.storage().instance()
             .get(&DataKey::TotalContributions).unwrap_or(0);
         env.storage().instance()
@@ -218,6 +204,96 @@ impl TreasuryContract {
             (Symbol::new(&env, "contribution"),),
             (member, amount, period),
         );
+    }
+
+    /// Processes multiple member contributions in a single transaction.
+    ///
+    /// # Authorization
+    /// Only the admin can call this function.
+    ///
+    /// # Arguments
+    /// * `admin` - The admin's address
+    /// * `contributions` - A vector of (member, amount, period) tuples
+    ///
+    /// # Events
+    /// - `skipped_non_member` for each invalid member
+    /// - `batch_contribution` summary at the end: (count, total_amount, period)
+    ///
+    /// # Returns
+    /// Returns a tuple (valid_count, total_amount) of successfully processed contributions.
+    pub fn batch_contribute(
+        env: Env,
+        admin: Address,
+        contributions: Vec<(Address, i128, u32)>,
+    ) -> (u32, i128) {
+        admin.require_auth();
+        Self::require_admin(&env, &admin);
+
+        let mut valid_count: u32 = 0;
+        let mut total_amount: i128 = 0;
+
+        let members: Vec<Address> = env.storage().instance()
+            .get(&DataKey::Members)
+            .unwrap_or(Vec::new(&env));
+
+        let asset: Address = env.storage().instance().get(&DataKey::AssetAddress).unwrap();
+        let token_client = token::Client::new(&env, &asset);
+
+        for (member, amount, period) in contributions.iter() {
+            if !members.contains(member) {
+                env.events().publish(
+                    (Symbol::new(&env, "skipped_non_member"),),
+                    (member, "not a member"),
+                );
+                continue;
+            }
+
+            if *amount <= 0 {
+                env.events().publish(
+                    (Symbol::new(&env, "skipped_invalid_amount"),),
+                    (member, "amount must be positive"),
+                );
+                continue;
+            }
+
+            // Transfer tokens from member to contract
+            token_client.transfer(member, &env.current_contract_address(), amount);
+
+            // Record contribution
+            let record = ContributionRecord {
+                member: member.clone(),
+                amount: *amount,
+                timestamp: env.ledger().timestamp(),
+                period: *period,
+            };
+
+            let mut history: Vec<ContributionRecord> = env
+                .storage().persistent()
+                .get(&DataKey::Contributions(member.clone()))
+                .unwrap_or(Vec::new(&env));
+            history.push_back(record);
+            env.storage().persistent()
+                .set(&DataKey::Contributions(member.clone()), &history);
+
+            // Update counts
+            valid_count += 1;
+            total_amount += amount;
+        }
+
+        // Update total contributions
+        let current_total: i128 = env.storage().instance()
+            .get(&DataKey::TotalContributions).unwrap_or(0);
+        env.storage().instance()
+            .set(&DataKey::TotalContributions, &(current_total + total_amount));
+
+        env.events().publish(
+            (Symbol::new(&env, "batch_contribution"),),
+            (valid_count, total_amount, env.ledger().timestamp()),
+        );
+
+        env.storage().instance().extend_ttl(100, 100);
+
+        (valid_count, total_amount)
     }
 
     /// Withdraw funds — only callable by admin (e.g. for approved loans or expenses).
@@ -273,16 +349,6 @@ impl TreasuryContract {
     }
 
     /// Aggregate a member's full picture in a single read-only call.
-    ///
-    /// Combines membership status with stats derived from the member's stored
-    /// contribution history: total contributed, number of contributions, and the
-    /// period / ledger timestamp of the most recent one. This lets the dashboard
-    /// render a member row with one RPC instead of `get_members` +
-    /// `get_contributions`.
-    ///
-    /// Read-only — no auth required. An unknown address (or a member who has not
-    /// contributed yet) returns zeroed stats and never panics; `is_member`
-    /// reflects whether the address is in the members list regardless.
     pub fn get_member_summary(env: Env, member: Address) -> MemberSummary {
         let members: Vec<Address> = env
             .storage().instance()
@@ -356,7 +422,6 @@ mod tests {
         let asset = env.register_stellar_asset_contract_v2(token_admin.clone());
         let asset_address = asset.address();
 
-        // Fund member
         StellarAssetClient::new(&env, &asset_address)
             .mint(&member, &10_000_0000000i128);
 
@@ -377,7 +442,7 @@ mod tests {
         client.initialize(&admin, &String::from_str(&env, "Test Coop"), &asset);
         client.add_member(&admin, &member);
 
-        let amount = 100_0000000i128; // 100 USDC (7 decimals)
+        let amount = 100_0000000i128;
         client.contribute(&member, &amount, &1);
 
         let balance = client.balance();
@@ -388,8 +453,6 @@ mod tests {
         assert_eq!(history.get(0).unwrap().amount, amount);
     }
 
-    // ── initialize edge cases ────────────────────────────────────────────────
-
     #[test]
     #[should_panic]
     fn test_double_initialize() {
@@ -397,8 +460,6 @@ mod tests {
         client.initialize(&admin, &String::from_str(&env, "Test Coop"), &asset);
         client.initialize(&admin, &String::from_str(&env, "Test Coop 2"), &asset);
     }
-
-    // ── add_member edge cases ────────────────────────────────────────────────
 
     #[test]
     #[should_panic]
@@ -418,23 +479,18 @@ mod tests {
         assert_eq!(client.get_members().len(), 1);
     }
 
-    // ── remove_member tests ──────────────────────────────────────────────────
-
     #[test]
     fn test_remove_member_happy_path() {
         let (env, client, admin, member, asset) = setup();
         client.initialize(&admin, &String::from_str(&env, "Test Coop"), &asset);
         client.add_member(&admin, &member);
 
-        // Verificar que el miembro existe
         let members = client.get_members();
         assert_eq!(members.len(), 1);
         assert_eq!(members.get(0).unwrap(), member);
 
-        // Remover el miembro
         client.remove_member(&admin, &member, &false);
 
-        // Verificar que ya no existe
         let members_after = client.get_members();
         assert_eq!(members_after.len(), 0);
     }
@@ -444,7 +500,6 @@ mod tests {
     fn test_remove_nonexistent_member() {
         let (env, client, admin, member, asset) = setup();
         client.initialize(&admin, &String::from_str(&env, "Test Coop"), &asset);
-        // Intentar remover un miembro que no existe
         client.remove_member(&admin, &member, &false);
     }
 
@@ -455,7 +510,6 @@ mod tests {
         let non_admin = Address::generate(&env);
         client.initialize(&admin, &String::from_str(&env, "Test Coop"), &asset);
         client.add_member(&admin, &member);
-        // Intentar remover con un no-admin
         client.remove_member(&non_admin, &member, &false);
     }
 
@@ -465,20 +519,15 @@ mod tests {
         client.initialize(&admin, &String::from_str(&env, "Test Coop"), &asset);
         client.add_member(&admin, &member);
 
-        // Hacer una contribución
         let amount = 100_0000000i128;
         client.contribute(&member, &amount, &1);
 
-        // Remover el miembro
         client.remove_member(&admin, &member, &false);
 
-        // Verificar que el historial de contribuciones se conserva
         let history = client.get_contributions(&member);
         assert_eq!(history.len(), 1);
         assert_eq!(history.get(0).unwrap().amount, amount);
     }
-
-    // ── contribute edge cases ────────────────────────────────────────────────
 
     #[test]
     #[should_panic]
@@ -506,8 +555,6 @@ mod tests {
         let non_member = Address::generate(&env);
         client.contribute(&non_member, &100_0000000i128, &1);
     }
-
-    // ── withdraw happy path + edge cases ────────────────────────────────────
 
     #[test]
     fn test_withdraw_happy_path() {
@@ -551,8 +598,6 @@ mod tests {
         let recipient = Address::generate(&env);
         client.withdraw(&admin, &recipient, &(deposit + 1));
     }
-
-    // ── query functions ──────────────────────────────────────────────────────
 
     #[test]
     fn test_balance_initial_is_zero() {
@@ -616,8 +661,6 @@ mod tests {
         assert!(info.is_active);
     }
 
-    // ── multi-member scenario ────────────────────────────────────────────────
-
     #[test]
     fn test_multiple_members_contribute_independently() {
         let (env, client, admin, member1, asset) = setup();
@@ -642,8 +685,6 @@ mod tests {
         assert_eq!(info.member_count, 2);
     }
 
-    // ── timestamp recording ──────────────────────────────────────────────────
-
     #[test]
     fn test_contribute_records_ledger_timestamp() {
         let (env, client, admin, member, asset) = setup();
@@ -657,8 +698,6 @@ mod tests {
         let record = client.get_contributions(&member).get(0).unwrap();
         assert_eq!(record.timestamp, ts);
     }
-
-    // ── get_member_summary ───────────────────────────────────────────────────
 
     #[test]
     fn test_get_member_summary_known_member_with_contributions() {
@@ -676,7 +715,6 @@ mod tests {
         assert!(summary.is_member);
         assert_eq!(summary.total_contributed, 350_0000000i128);
         assert_eq!(summary.contribution_count, 2);
-        // Reflects the most recent contribution.
         assert_eq!(summary.last_period, 3);
         assert_eq!(summary.last_contributed_at, ts);
     }
@@ -708,5 +746,87 @@ mod tests {
         assert_eq!(summary.contribution_count, 0);
         assert_eq!(summary.last_period, 0);
         assert_eq!(summary.last_contributed_at, 0);
+    }
+
+    // ── batch_contribute tests ──────────────────────────────────────────────────
+
+    #[test]
+    fn test_batch_contribute_success() {
+        let (env, client, admin, member1, asset) = setup();
+        let member2 = Address::generate(&env);
+
+        StellarAssetClient::new(&env, &asset)
+            .mint(&member2, &10_000_0000000i128);
+
+        client.initialize(&admin, &String::from_str(&env, "Test Coop"), &asset);
+        client.add_member(&admin, &member1);
+        client.add_member(&admin, &member2);
+
+        let contributions = vec![
+            (member1.clone(), 100_0000000i128, 1u32),
+            (member2.clone(), 200_0000000i128, 1u32),
+        ];
+
+        let (count, total) = client.batch_contribute(&admin, &contributions);
+
+        assert_eq!(count, 2);
+        assert_eq!(total, 300_0000000i128);
+        assert_eq!(client.balance(), 300_0000000i128);
+
+        let info = client.get_info();
+        assert_eq!(info.total_contributions, 300_0000000i128);
+        assert_eq!(info.member_count, 2);
+    }
+
+    #[test]
+    fn test_batch_contribute_partial_skip() {
+        let (env, client, admin, member1, asset) = setup();
+        let non_member = Address::generate(&env);
+
+        StellarAssetClient::new(&env, &asset)
+            .mint(&non_member, &10_000_0000000i128);
+
+        client.initialize(&admin, &String::from_str(&env, "Test Coop"), &asset);
+        client.add_member(&admin, &member1);
+
+        let contributions = vec![
+            (member1.clone(), 100_0000000i128, 1u32),
+            (non_member.clone(), 200_0000000i128, 1u32),
+        ];
+
+        let (count, total) = client.batch_contribute(&admin, &contributions);
+
+        assert_eq!(count, 1);
+        assert_eq!(total, 100_0000000i128);
+        assert_eq!(client.balance(), 100_0000000i128);
+
+        let info = client.get_info();
+        assert_eq!(info.total_contributions, 100_0000000i128);
+        assert_eq!(info.member_count, 1);
+    }
+
+    #[test]
+    fn test_batch_contribute_empty() {
+        let (env, client, admin, _, asset) = setup();
+        client.initialize(&admin, &String::from_str(&env, "Test Coop"), &asset);
+
+        let contributions: Vec<(Address, i128, u32)> = vec![];
+
+        let (count, total) = client.batch_contribute(&admin, &contributions);
+
+        assert_eq!(count, 0);
+        assert_eq!(total, 0);
+        assert_eq!(client.balance(), 0);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_batch_contribute_unauthorized() {
+        let (env, client, admin, _, asset) = setup();
+        let non_admin = Address::generate(&env);
+        client.initialize(&admin, &String::from_str(&env, "Test Coop"), &asset);
+
+        let contributions = vec![];
+        client.batch_contribute(&non_admin, &contributions);
     }
 }
