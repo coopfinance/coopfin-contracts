@@ -220,7 +220,7 @@ impl TreasuryContract {
             }
 
             // Check positive amount
-            if amount <= &0i128 {
+            if *amount <= 0i128 {
                 env.events().publish(
                     (Symbol::new(&env, "skipped_invalid_amount"),),
                     (member, "amount must be positive"),
@@ -232,12 +232,12 @@ impl TreasuryContract {
             // Transfer tokens from member to contract
             token_client.transfer(member, &env.current_contract_address(), amount);
 
-            // Record contribution - clone the values to avoid reference issues
+            // Record contribution
             let record = ContributionRecord {
                 member: member.clone(),
-                amount: amount.clone(),
+                amount: *amount,
                 timestamp: env.ledger().timestamp(),
-                period: period.clone(),
+                period: *period,
             };
 
             let mut history: Vec<ContributionRecord> = env
@@ -249,7 +249,7 @@ impl TreasuryContract {
                 .set(&DataKey::Contributions(member.clone()), &history);
 
             valid_count += 1;
-            total_amount += amount.clone();
+            total_amount += *amount;
 
             i += 1;
         }
