@@ -185,7 +185,6 @@ impl TreasuryContract {
         );
     }
 
-    /// Processes multiple member contributions in a single transaction.
     pub fn batch_contribute(
         env: Env,
         admin: Address,
@@ -226,7 +225,7 @@ impl TreasuryContract {
                 continue;
             }
 
-            token_client.transfer(member, &env.current_contract_address(), &amount);
+            token_client.transfer(&member, &env.current_contract_address(), &amount);
 
             let record = ContributionRecord {
                 member: member.clone(),
