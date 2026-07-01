@@ -4,6 +4,11 @@ use soroban_sdk::{
     contract, contractimpl, contracttype, token, Address, Env, Symbol, Vec, String,
 };
 
+// ─── TTL Constants ────────────────────────────────────────────────────────────
+// Instance storage TTL: bump if below 100 ledgers (~5 days), extend to 10,000 (~500 days).
+const INSTANCE_TTL_THRESHOLD: u32 = 100;
+const INSTANCE_TTL_EXTEND_TO: u32 = 10_000;
+
 #[contracttype]
 #[derive(Clone)]
 pub enum DataKey {
@@ -44,7 +49,18 @@ pub struct LoanContract;
 
 #[contractimpl]
 impl LoanContract {
+    /// Extend instance storage TTL to prevent data expiration.
+    ///
+    /// Called at the start of every state-changing function. Uses threshold=100
+    /// and extend_to=10,000 ledgers (~500 days) to keep instance data alive.
+    fn bump_instance(env: &Env) {
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
+    }
+
     pub fn initialize(env: Env, admin: Address, treasury: Address, asset: Address) {
+        Self::bump_instance(&env);
         admin.require_auth();
         if env.storage().instance().has(&DataKey::Admin) {
             panic!("already initialized");
@@ -64,6 +80,7 @@ impl LoanContract {
         purpose: String,
         repayment_days: u32,
     ) -> u32 {
+        Self::bump_instance(&env);
         borrower.require_auth();
         if amount <= 0 { panic!("amount must be positive"); }
 
@@ -102,6 +119,7 @@ impl LoanContract {
 
     /// Admin (or governance contract) approves a loan and disburses funds.
     pub fn approve_loan(env: Env, admin: Address, loan_id: u32) {
+        Self::bump_instance(&env);
         admin.require_auth();
         Self::require_admin(&env, &admin);
 
@@ -137,6 +155,7 @@ impl LoanContract {
 
     /// Borrower repays (partial or full).
     pub fn repay(env: Env, borrower: Address, loan_id: u32, amount: i128) {
+        Self::bump_instance(&env);
         borrower.require_auth();
 
         let mut loans: Vec<Loan> = env.storage().instance()
