@@ -132,7 +132,7 @@ impl TreasuryContract {
         Self::require_admin(&env, &admin);
 
         // 2. Obtener el vector de miembros del storage de instancia
-        let mut members: Vec<Address> = env
+        let members: Vec<Address> = env
             .storage()
             .instance()
             .get(&DataKey::Members)
@@ -173,8 +173,8 @@ impl TreasuryContract {
             (member, env.ledger().timestamp()),
         );
 
-        // 8. Bump TTL del storage de instancia
-        env.storage().instance().bump_ttl(100, 100);
+        // 8. Extender TTL del storage de instancia (100 ledgers)
+        env.storage().instance().extend_ttl(100, 100);
     }
 
     /// Record a member contribution. Transfers USDC from member to this contract.
