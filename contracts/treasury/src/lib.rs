@@ -1,3 +1,27 @@
+//! # Treasury Contract
+//!
+//! Core cooperative treasury for managing member contributions and fund
+//! disbursements. This contract acts as the financial backbone of the
+//! cooperative, holding pooled member contributions (e.g. USDC) and
+//! allowing the admin to withdraw funds for approved expenses or loans.
+//!
+//! ## Overview
+//!
+//! - **Members** contribute funds periodically via [`TreasuryContract::contribute`].
+//! - The **admin** manages membership ([`TreasuryContract::add_member`]) and
+//!   withdrawals ([`TreasuryContract::withdraw`]).
+//! - Read-only helpers expose balances, member lists, contribution histories,
+//!   and aggregated member summaries.
+//!
+//! All monetary amounts are denominated in the configured SPL token (typically
+//! USDC with 7 decimal places).
+//!
+//! ## Storage
+//!
+//! Instance storage holds group configuration, member list, and running totals.
+//! Persistent storage tracks per-member contribution histories so they survive
+//! contract upgrades.
+
 #![no_std]
 
 use soroban_sdk::{
@@ -62,6 +86,27 @@ pub struct TreasuryContract;
 #[contractimpl]
 impl TreasuryContract {
     /// Initialize a new cooperative treasury group.
+    ///
+    /// Sets up the treasury with an admin, human-readable group name, and
+    /// the SPL token address used for all contributions and disbursements.
+    /// Must be called exactly once; subsequent calls will panic.
+    ///
+    /// # Authorization
+    ///
+    /// Requires authorization from `admin`.
+    ///
+    /// # Panics
+    ///
+    /// - If the contract has already been initialized (`"already initialized"`).
+    ///
+    /// # Events
+    ///
+    /// None emitted directly by this function.
+    ///
+    /// # Return value
+    ///
+    /// Returns a [`GroupInfo`] struct summarizing the newly created group
+    /// (name, admin, asset, zero contributions, zero members, active).
     pub fn initialize(
         env: Env,
         admin: Address,
@@ -92,6 +137,28 @@ impl TreasuryContract {
     }
 
     /// Add a new member to the cooperative.
+    ///
+    /// Registers `member` in the on-chain member list so they can
+    /// subsequently make contributions. Adding the same address twice is
+    /// a no-op (idempotent).
+    ///
+    /// # Authorization
+    ///
+    /// Requires authorization from `admin`. Caller must also be the
+    /// registered admin of this treasury.
+    ///
+    /// # Panics
+    ///
+    /// - If the caller is not the admin (`"unauthorized: admin only"`).
+    ///
+    /// # Events
+    ///
+    /// - `"member_added"` — emitted with the new member's address when a
+    ///   genuinely new member is added.
+    ///
+    /// # Return value
+    ///
+    /// Returns `()`.
     pub fn add_member(env: Env, admin: Address, member: Address) {
         admin.require_auth();
         Self::require_admin(&env, &admin);
@@ -112,6 +179,29 @@ impl TreasuryContract {
     }
 
     /// Record a member contribution. Transfers USDC from member to this contract.
+    ///
+    /// Pulls `amount` of the configured token from `member`'s wallet into the
+    /// treasury, records the contribution with the given `period` identifier,
+    /// and updates the running total.
+    ///
+    /// # Authorization
+    ///
+    /// Requires authorization from `member`. Caller must also be a
+    /// registered member of this treasury.
+    ///
+    /// # Panics
+    ///
+    /// - If the caller is not a registered member (`"unauthorized: members only"`).
+    /// - If `amount` is less than or equal to zero (`"amount must be positive"`).
+    /// - If the underlying token transfer fails (e.g. insufficient balance).
+    ///
+    /// # Events
+    ///
+    /// - `"contribution"` — emitted with `(member, amount, period)`.
+    ///
+    /// # Return value
+    ///
+    /// Returns `()`.
     pub fn contribute(env: Env, member: Address, amount: i128, period: u32) {
         member.require_auth();
         Self::require_member(&env, &member);
@@ -155,6 +245,28 @@ impl TreasuryContract {
     }
 
     /// Withdraw funds — only callable by admin (e.g. for approved loans or expenses).
+    ///
+    /// Transfers `amount` of the configured token from the treasury to `to`.
+    /// Typically used after governance approval for loan disbursements or
+    /// operational expenses.
+    ///
+    /// # Authorization
+    ///
+    /// Requires authorization from `admin`. Caller must also be the
+    /// registered admin of this treasury.
+    ///
+    /// # Panics
+    ///
+    /// - If the caller is not the admin (`"unauthorized: admin only"`).
+    /// - If the treasury has insufficient balance (token transfer will fail).
+    ///
+    /// # Events
+    ///
+    /// - `"withdrawal"` — emitted with `(to, amount)`.
+    ///
+    /// # Return value
+    ///
+    /// Returns `()`.
     pub fn withdraw(env: Env, admin: Address, to: Address, amount: i128) {
         admin.require_auth();
         Self::require_admin(&env, &admin);
@@ -170,6 +282,26 @@ impl TreasuryContract {
     }
 
     /// Get current treasury balance.
+    ///
+    /// Queries the configured SPL token contract for the token balance held
+    /// by this treasury contract address.
+    ///
+    /// # Authorization
+    ///
+    /// None required — this is a read-only public query.
+    ///
+    /// # Panics
+    ///
+    /// - If the asset address is not set (contract not initialized).
+    /// - If the token contract call fails.
+    ///
+    /// # Events
+    ///
+    /// None.
+    ///
+    /// # Return value
+    ///
+    /// Returns `i128` — the current token balance of the treasury.
     pub fn balance(env: Env) -> i128 {
         let asset: Address = env.storage().instance().get(&DataKey::AssetAddress).unwrap();
         let token_client = token::Client::new(&env, &asset);
@@ -177,6 +309,25 @@ impl TreasuryContract {
     }
 
     /// Get all members.
+    ///
+    /// Returns the full list of registered cooperative member addresses.
+    ///
+    /// # Authorization
+    ///
+    /// None required — this is a read-only public query.
+    ///
+    /// # Panics
+    ///
+    /// None.
+    ///
+    /// # Events
+    ///
+    /// None.
+    ///
+    /// # Return value
+    ///
+    /// Returns `Vec<Address>` — all registered member addresses, or an empty
+    /// vector if no members have been added.
     pub fn get_members(env: Env) -> Vec<Address> {
         env.storage().instance()
             .get(&DataKey::Members)
@@ -184,6 +335,26 @@ impl TreasuryContract {
     }
 
     /// Get contribution history for a member.
+    ///
+    /// Returns all [`ContributionRecord`] entries for the given member,
+    /// ordered chronologically from oldest to newest.
+    ///
+    /// # Authorization
+    ///
+    /// None required — this is a read-only public query.
+    ///
+    /// # Panics
+    ///
+    /// None.
+    ///
+    /// # Events
+    ///
+    /// None.
+    ///
+    /// # Return value
+    ///
+    /// Returns `Vec<ContributionRecord>` — the member's contribution history,
+    /// or an empty vector if the member has no recorded contributions.
     pub fn get_contributions(env: Env, member: Address) -> Vec<ContributionRecord> {
         env.storage().persistent()
             .get(&DataKey::Contributions(member))
@@ -191,6 +362,26 @@ impl TreasuryContract {
     }
 
     /// Get full group info.
+    ///
+    /// Returns a [`GroupInfo`] struct containing the treasury's name, admin,
+    /// asset token address, total contributions across all members, member
+    /// count, and active status.
+    ///
+    /// # Authorization
+    ///
+    /// None required — this is a read-only public query.
+    ///
+    /// # Panics
+    ///
+    /// - If the contract is not initialized (missing stored values).
+    ///
+    /// # Events
+    ///
+    /// None.
+    ///
+    /// # Return value
+    ///
+    /// Returns [`GroupInfo`] — complete treasury group metadata.
     pub fn get_info(env: Env) -> GroupInfo {
         let members: Vec<Address> = env.storage().instance()
             .get(&DataKey::Members)
@@ -217,6 +408,25 @@ impl TreasuryContract {
     /// Read-only — no auth required. An unknown address (or a member who has not
     /// contributed yet) returns zeroed stats and never panics; `is_member`
     /// reflects whether the address is in the members list regardless.
+    ///
+    /// # Authorization
+    ///
+    /// None required — this is a read-only public query.
+    ///
+    /// # Panics
+    ///
+    /// None. Unknown addresses and members without contributions return
+    /// zeroed fields without error.
+    ///
+    /// # Events
+    ///
+    /// None.
+    ///
+    /// # Return value
+    ///
+    /// Returns [`MemberSummary`] — aggregated member data including
+    /// membership status, total contributed, contribution count, and
+    /// last contribution period/timestamp.
     pub fn get_member_summary(env: Env, member: Address) -> MemberSummary {
         let members: Vec<Address> = env
             .storage().instance()
