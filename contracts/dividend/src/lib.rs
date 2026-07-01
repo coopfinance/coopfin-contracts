@@ -1,8 +1,27 @@
+//! # Dividend Contract
+//!
+//! Distributes cooperative profits to members proportionally based on their
+//! share weight. This contract holds no funds itself; it pulls the
+//! configured token from its own balance (pre-funded by the treasury) and
+//! transfers each member's calculated payout.
+//!
+//! ## Overview
+//!
+//! - The **admin** calls [`DividendContract::distribute`] with a list of
+//!   recipients, their respective share weights, the total profit amount,
+//!   and a period label.
+//! - Each member receives `profit × (member_shares / total_shares)`.
+//! - Distribution records are stored for auditability and can be queried
+//!   via [`DividendContract::get_distributions`].
+//!
+//! ## Storage
+//!
+//! Distribution records are stored in instance storage as a `Vec<Distribution>`.
+//! A monotonically increasing counter tracks distribution IDs.
+
 #![no_std]
 
-use soroban_sdk::{
-    contract, contractimpl, contracttype, token, Address, Env, Symbol, Vec,
-};
+use soroban_sdk::{contract, contractimpl, contracttype, token, Address, Env, Symbol, Vec, String};
 
 #[contracttype]
 #[derive(Clone)]
@@ -31,6 +50,27 @@ pub struct DividendContract;
 
 #[contractimpl]
 impl DividendContract {
+    /// Initialize the dividend contract with an admin, asset token, and
+    /// treasury reference.
+    ///
+    /// Must be called exactly once before any distribution. Sets the
+    /// initial distribution counter to zero.
+    ///
+    /// # Authorization
+    ///
+    /// Requires authorization from `admin`.
+    ///
+    /// # Panics
+    ///
+    /// None on first call (no duplicate-init guard).
+    ///
+    /// # Events
+    ///
+    /// None emitted directly by this function.
+    ///
+    /// # Return value
+    ///
+    /// Returns `()`.
     pub fn initialize(env: Env, admin: Address, asset: Address, treasury: Address) {
         admin.require_auth();
         env.storage().instance().set(&DataKey::Admin, &admin);
@@ -45,6 +85,34 @@ impl DividendContract {
     ///
     /// `recipients` and `shares` must be equal length.
     /// Each member receives: `profit * (member_shares / total_shares)`
+    ///
+    /// Transfers the calculated payout from this contract to each recipient
+    /// and records the distribution for future auditing.
+    ///
+    /// # Authorization
+    ///
+    /// Requires authorization from `admin`. Caller must also be the
+    /// registered admin of this contract.
+    ///
+    /// # Panics
+    ///
+    /// - If the caller is not the admin (`"unauthorized"`).
+    /// - If `recipients` and `shares` have different lengths
+    ///   (`"recipients and shares length mismatch"`).
+    /// - If `total_profit` is less than or equal to zero
+    ///   (`"profit must be positive"`).
+    /// - If the sum of all shares is zero (`"total shares cannot be zero"`).
+    /// - If any individual token transfer fails (insufficient balance in
+    ///   contract).
+    ///
+    /// # Events
+    ///
+    /// - `"dividend_distributed"` — emitted with `(id, total_profit,
+    ///   recipient_count)`.
+    ///
+    /// # Return value
+    ///
+    /// Returns `u32` — the newly assigned distribution ID.
     pub fn distribute(
         env: Env,
         admin: Address,
@@ -109,6 +177,26 @@ impl DividendContract {
         id
     }
 
+    /// Get all past distributions.
+    ///
+    /// Returns the full list of distribution records in chronological order.
+    ///
+    /// # Authorization
+    ///
+    /// None required — this is a read-only public query.
+    ///
+    /// # Panics
+    ///
+    /// None.
+    ///
+    /// # Events
+    ///
+    /// None.
+    ///
+    /// # Return value
+    ///
+    /// Returns `Vec<Distribution>` — all distribution records, or an empty
+    /// vector if no distributions have been executed.
     pub fn get_distributions(env: Env) -> Vec<Distribution> {
         env.storage().instance()
             .get(&DataKey::Distributions)

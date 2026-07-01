@@ -1,8 +1,30 @@
+//! # Governance Contract
+//!
+//! Manages the cooperative's configurable rules and links together the
+//! voting, loan, and treasury contracts. This contract serves as the
+//! central registry for cooperative parameters such as minimum
+//! contributions, interest rates, voting quorums, and penalty rules.
+//!
+//! ## Overview
+//!
+//! - The **admin** initializes the contract with references to the voting,
+//!   loan, and treasury contracts, and sets default [`CoopRules`].
+//! - The **admin** can update rules at any time via
+//!   [`GovernanceContract::update_rules`].
+//! - Any caller can read the current rules via
+//!   [`GovernanceContract::get_rules`].
+//!
+//! Default rules are tuned for an African ROSCA/SACCO-style cooperative
+//! with a 10 USDC minimum contribution, 30-day periods, 5% interest, and
+//! a 3-vote quorum.
+//!
+//! ## Storage
+//!
+//! All configuration is stored in instance storage.
+
 #![no_std]
 
-use soroban_sdk::{
-    contract, contractimpl, contracttype, Address, Env, Symbol, Vec,
-};
+use soroban_sdk::{contract, contractimpl, contracttype, Address, Env, Symbol};
 
 #[contracttype]
 #[derive(Clone)]
@@ -31,6 +53,28 @@ pub struct GovernanceContract;
 
 #[contractimpl]
 impl GovernanceContract {
+    /// Initialize the governance contract with linked contract addresses
+    /// and default cooperative rules.
+    ///
+    /// Sets the admin, stores references to the voting, loan, and treasury
+    /// contracts, and creates a default [`CoopRules`] configuration tuned
+    /// for an African ROSCA/SACCO.
+    ///
+    /// # Authorization
+    ///
+    /// Requires authorization from `admin`.
+    ///
+    /// # Panics
+    ///
+    /// None on first call (no duplicate-init guard).
+    ///
+    /// # Events
+    ///
+    /// None emitted directly by this function.
+    ///
+    /// # Return value
+    ///
+    /// Returns `()`.
     pub fn initialize(
         env: Env,
         admin: Address,
@@ -57,6 +101,28 @@ impl GovernanceContract {
         env.storage().instance().set(&DataKey::Rules, &rules);
     }
 
+    /// Update the cooperative rules.
+    ///
+    /// Replaces the current [`CoopRules`] with a new set. It is the
+    /// caller's responsibility (typically a governance vote) to ensure the
+    /// new rules are valid and consistent.
+    ///
+    /// # Authorization
+    ///
+    /// Requires authorization from `admin`. Caller must also be the
+    /// registered admin of this contract.
+    ///
+    /// # Panics
+    ///
+    /// - If the caller is not the admin (`"unauthorized"`).
+    ///
+    /// # Events
+    ///
+    /// - `"rules_updated"` — emitted with an empty tuple `()`.
+    ///
+    /// # Return value
+    ///
+    /// Returns `()`.
     pub fn update_rules(env: Env, admin: Address, rules: CoopRules) {
         admin.require_auth();
         Self::require_admin(&env, &admin);
@@ -64,6 +130,26 @@ impl GovernanceContract {
         env.events().publish((Symbol::new(&env, "rules_updated"),), ());
     }
 
+    /// Get the current cooperative rules.
+    ///
+    /// Returns the active [`CoopRules`] configuration, including minimum
+    /// contribution, period length, loan parameters, and voting settings.
+    ///
+    /// # Authorization
+    ///
+    /// None required — this is a read-only public query.
+    ///
+    /// # Panics
+    ///
+    /// - If the contract is not initialized (rules not set).
+    ///
+    /// # Events
+    ///
+    /// None.
+    ///
+    /// # Return value
+    ///
+    /// Returns [`CoopRules`] — the current cooperative rule set.
     pub fn get_rules(env: Env) -> CoopRules {
         env.storage().instance().get(&DataKey::Rules).unwrap()
     }
