@@ -207,7 +207,6 @@ impl TreasuryContract {
         while i < contributions.len() {
             let (member, amount, period) = contributions.get(i).unwrap();
 
-            // ✅ CORREGIDO: Pasar &member para evitar el move
             if !members.contains(&member) {
                 env.events().publish(
                     (Symbol::new(&env, "skipped_non_member"),),
@@ -225,6 +224,9 @@ impl TreasuryContract {
                 i += 1;
                 continue;
             }
+
+            // ✅ AUTORIZACIÓN DE CADA MIEMBRO
+            member.require_auth();
 
             token_client.transfer(&member, &env.current_contract_address(), &amount);
 
