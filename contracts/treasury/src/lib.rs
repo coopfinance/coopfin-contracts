@@ -91,6 +91,18 @@ impl TreasuryContract {
         }
     }
 
+    /// Transfer admin rights to a new address.
+    pub fn transfer_admin(env: Env, current_admin: Address, new_admin: Address) {
+        current_admin.require_auth();
+        Self::require_admin(&env, &current_admin);
+
+        env.storage().instance().set(&DataKey::Admin, &new_admin);
+        env.events().publish(
+            (Symbol::new(&env, "admin_transferred"),),
+            (current_admin, new_admin),
+        );
+    }
+
     /// Add a new member to the cooperative.
     pub fn add_member(env: Env, admin: Address, member: Address) {
         admin.require_auth();
@@ -353,6 +365,29 @@ mod tests {
     }
 
     // ── contribute edge cases ────────────────────────────────────────────────
+
+    #[test]
+    fn test_transfer_admin_updates_admin() {
+        let (env, client, admin, _, asset) = setup();
+        let new_admin = Address::generate(&env);
+        client.initialize(&admin, &String::from_str(&env, "Test Coop"), &asset);
+
+        client.transfer_admin(&admin, &new_admin);
+
+        assert_eq!(client.get_info().admin, new_admin);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_old_admin_cannot_call_admin_only_after_transfer() {
+        let (env, client, admin, _, asset) = setup();
+        let new_admin = Address::generate(&env);
+        let member = Address::generate(&env);
+        client.initialize(&admin, &String::from_str(&env, "Test Coop"), &asset);
+        client.transfer_admin(&admin, &new_admin);
+
+        client.add_member(&admin, &member);
+    }
 
     #[test]
     #[should_panic]
