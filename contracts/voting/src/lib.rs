@@ -210,4 +210,19 @@ impl VotingContract {
         }
         panic!("proposal not found");
     }
+
+    fn require_admin(env: &Env, caller: &Address) {
+        let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        if admin != *caller { panic!("unauthorized"); }
+    }
+
+    pub fn transfer_admin(env: Env, current_admin: Address, new_admin: Address) {
+        current_admin.require_auth();
+        Self::require_admin(&env, &current_admin);
+        env.storage().instance().set(&DataKey::Admin, &new_admin);
+        env.events().publish(
+            (Symbol::new(&env, "admin_transferred"),),
+            (current_admin, new_admin),
+        );
+    }
 }
