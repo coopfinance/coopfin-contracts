@@ -1,4 +1,8 @@
 #![no_std]
+//! Loan lifecycle contract for CoopFinance groups.
+//!
+//! Stores loan requests, lets the configured admin approve and disburse loans,
+//! accepts borrower repayments, and exposes read-only loan views.
 
 use soroban_sdk::{
     contract, contractimpl, contracttype, token, Address, Env, Symbol, Vec, String,
@@ -44,6 +48,19 @@ pub struct LoanContract;
 
 #[contractimpl]
 impl LoanContract {
+    /// Initializes the loan contract with its admin, treasury, and asset.
+    ///
+    /// # Authorization
+    /// Requires authorization from `admin`.
+    ///
+    /// # Panics
+    /// Panics if the contract has already been initialized.
+    ///
+    /// # Events
+    /// Emits no events.
+    ///
+    /// # Returns
+    /// Returns nothing.
     pub fn initialize(env: Env, admin: Address, treasury: Address, asset: Address) {
         admin.require_auth();
         if env.storage().instance().has(&DataKey::Admin) {
@@ -56,7 +73,19 @@ impl LoanContract {
         env.storage().instance().set(&DataKey::Loans, &Vec::<Loan>::new(&env));
     }
 
-    /// Member submits a loan request.
+    /// Records a member loan request and returns its new loan id.
+    ///
+    /// # Authorization
+    /// Requires authorization from `borrower`.
+    ///
+    /// # Panics
+    /// Panics if `amount` is not positive.
+    ///
+    /// # Events
+    /// Emits `loan_requested` with `(loan_id, borrower, amount)`.
+    ///
+    /// # Returns
+    /// Returns the newly assigned loan id.
     pub fn request_loan(
         env: Env,
         borrower: Address,
@@ -100,7 +129,20 @@ impl LoanContract {
         id
     }
 
-    /// Admin (or governance contract) approves a loan and disburses funds.
+    /// Approves a pending loan and transfers the principal to the borrower.
+    ///
+    /// # Authorization
+    /// Requires authorization from `admin`, which must match the stored admin.
+    ///
+    /// # Panics
+    /// Panics if `admin` is not the stored admin, if `loan_id` does not exist,
+    /// if the loan is not pending, or if the token transfer fails.
+    ///
+    /// # Events
+    /// Emits `loan_approved` with `(loan_id, borrower, amount)`.
+    ///
+    /// # Returns
+    /// Returns nothing.
     pub fn approve_loan(env: Env, admin: Address, loan_id: u32) {
         admin.require_auth();
         Self::require_admin(&env, &admin);
@@ -135,7 +177,21 @@ impl LoanContract {
         );
     }
 
-    /// Borrower repays (partial or full).
+    /// Records a borrower repayment and marks the loan repaid once fully paid.
+    ///
+    /// # Authorization
+    /// Requires authorization from `borrower`, which must match the loan
+    /// borrower.
+    ///
+    /// # Panics
+    /// Panics if `loan_id` does not exist, if `borrower` is not the borrower,
+    /// if the loan is not approved, or if the token transfer fails.
+    ///
+    /// # Events
+    /// Emits `loan_repaid` with `(loan_id, borrower, amount, status)`.
+    ///
+    /// # Returns
+    /// Returns nothing.
     pub fn repay(env: Env, borrower: Address, loan_id: u32, amount: i128) {
         borrower.require_auth();
 
@@ -172,14 +228,38 @@ impl LoanContract {
         );
     }
 
-    /// Get all loans.
+    /// Returns all loans currently stored by the contract.
+    ///
+    /// # Authorization
+    /// No authorization is required.
+    ///
+    /// # Panics
+    /// Does not panic.
+    ///
+    /// # Events
+    /// Emits no events.
+    ///
+    /// # Returns
+    /// Returns a vector of all loan records, or an empty vector if none exist.
     pub fn get_loans(env: Env) -> Vec<Loan> {
         env.storage().instance()
             .get(&DataKey::Loans)
             .unwrap_or(Vec::new(&env))
     }
 
-    /// Get a single loan by ID.
+    /// Returns a single loan by id.
+    ///
+    /// # Authorization
+    /// No authorization is required.
+    ///
+    /// # Panics
+    /// Panics if no loan with `loan_id` exists.
+    ///
+    /// # Events
+    /// Emits no events.
+    ///
+    /// # Returns
+    /// Returns the matching loan record.
     pub fn get_loan(env: Env, loan_id: u32) -> Loan {
         let loans: Vec<Loan> = env.storage().instance()
             .get(&DataKey::Loans).unwrap();

@@ -1,4 +1,9 @@
 #![no_std]
+//! Treasury contract for CoopFinance cooperative groups.
+//!
+//! Stores group membership, receives member contributions, tracks contribution
+//! history, and lets the configured admin withdraw treasury funds for approved
+//! cooperative uses.
 
 use soroban_sdk::{
     contract, contractimpl, contracttype, token, Address, Env, Symbol, Vec, String,
@@ -61,7 +66,12 @@ pub struct TreasuryContract;
 
 #[contractimpl]
 impl TreasuryContract {
-    /// Initialize a new cooperative treasury group.
+    /// Initializes a new cooperative treasury group.
+    ///
+    /// Requires authorization from `admin`, who becomes the stored treasury
+    /// administrator. Panics if the contract has already been initialized.
+    /// Does not emit an event. Returns the initial [`GroupInfo`] snapshot with
+    /// zero contributions and an empty member list.
     pub fn initialize(
         env: Env,
         admin: Address,
@@ -91,7 +101,12 @@ impl TreasuryContract {
         }
     }
 
-    /// Add a new member to the cooperative.
+    /// Adds `member` to the cooperative member list.
+    ///
+    /// Requires authorization from `admin` and panics if `admin` is not the
+    /// stored administrator. Adding an existing member is idempotent and does
+    /// not panic. Emits `member_added` only when a new member is inserted.
+    /// Returns nothing.
     pub fn add_member(env: Env, admin: Address, member: Address) {
         admin.require_auth();
         Self::require_admin(&env, &admin);
@@ -111,7 +126,12 @@ impl TreasuryContract {
         }
     }
 
-    /// Record a member contribution. Transfers USDC from member to this contract.
+    /// Records a member contribution and transfers tokens into the treasury.
+    ///
+    /// Requires authorization from `member` and panics if the caller is not in
+    /// the member list or if `amount` is not positive. The token transfer may
+    /// also panic if the member lacks balance or allowance. Emits
+    /// `contribution` with `(member, amount, period)`. Returns nothing.
     pub fn contribute(env: Env, member: Address, amount: i128, period: u32) {
         member.require_auth();
         Self::require_member(&env, &member);
@@ -154,7 +174,12 @@ impl TreasuryContract {
         );
     }
 
-    /// Withdraw funds — only callable by admin (e.g. for approved loans or expenses).
+    /// Withdraws treasury tokens to `to`.
+    ///
+    /// Requires authorization from `admin` and panics if `admin` is not the
+    /// stored administrator. The token transfer may panic when the treasury
+    /// balance is insufficient. Emits `withdrawal` with `(to, amount)`.
+    /// Returns nothing.
     pub fn withdraw(env: Env, admin: Address, to: Address, amount: i128) {
         admin.require_auth();
         Self::require_admin(&env, &admin);
@@ -169,28 +194,44 @@ impl TreasuryContract {
         );
     }
 
-    /// Get current treasury balance.
+    /// Returns the current token balance held by this treasury contract.
+    ///
+    /// This is a read-only query and requires no authorization. Panics if the
+    /// contract has not been initialized with an asset address. Emits no events.
+    /// Returns the token balance for the current contract address.
     pub fn balance(env: Env) -> i128 {
         let asset: Address = env.storage().instance().get(&DataKey::AssetAddress).unwrap();
         let token_client = token::Client::new(&env, &asset);
         token_client.balance(&env.current_contract_address())
     }
 
-    /// Get all members.
+    /// Returns all cooperative member addresses.
+    ///
+    /// This is a read-only query and requires no authorization. It does not
+    /// panic when no members have been added, emits no events, and returns an
+    /// empty vector in that case.
     pub fn get_members(env: Env) -> Vec<Address> {
         env.storage().instance()
             .get(&DataKey::Members)
             .unwrap_or(Vec::new(&env))
     }
 
-    /// Get contribution history for a member.
+    /// Returns the stored contribution history for `member`.
+    ///
+    /// This is a read-only query and requires no authorization. It does not
+    /// panic when the member has no contribution history, emits no events, and
+    /// returns an empty vector in that case.
     pub fn get_contributions(env: Env, member: Address) -> Vec<ContributionRecord> {
         env.storage().persistent()
             .get(&DataKey::Contributions(member))
             .unwrap_or(Vec::new(&env))
     }
 
-    /// Get full group info.
+    /// Returns the current treasury group information.
+    ///
+    /// This is a read-only query and requires no authorization. Panics if the
+    /// contract has not been initialized because required group fields are
+    /// missing. Emits no events. Returns a [`GroupInfo`] snapshot.
     pub fn get_info(env: Env) -> GroupInfo {
         let members: Vec<Address> = env.storage().instance()
             .get(&DataKey::Members)
@@ -206,7 +247,7 @@ impl TreasuryContract {
         }
     }
 
-    /// Aggregate a member's full picture in a single read-only call.
+    /// Aggregates a member's full picture in a single read-only call.
     ///
     /// Combines membership status with stats derived from the member's stored
     /// contribution history: total contributed, number of contributions, and the
@@ -214,9 +255,10 @@ impl TreasuryContract {
     /// render a member row with one RPC instead of `get_members` +
     /// `get_contributions`.
     ///
-    /// Read-only — no auth required. An unknown address (or a member who has not
-    /// contributed yet) returns zeroed stats and never panics; `is_member`
-    /// reflects whether the address is in the members list regardless.
+    /// This query requires no authorization. An unknown address, or a member
+    /// who has not contributed yet, returns zeroed stats and does not panic;
+    /// `is_member` reflects whether the address is in the members list. Emits
+    /// no events and returns a [`MemberSummary`] snapshot.
     pub fn get_member_summary(env: Env, member: Address) -> MemberSummary {
         let members: Vec<Address> = env
             .storage().instance()

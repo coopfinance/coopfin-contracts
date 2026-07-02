@@ -1,4 +1,8 @@
 #![no_std]
+//! Governance proposal and voting contract for CoopFinance groups.
+//!
+//! Stores proposals, records one vote per voter per proposal, finalizes
+//! proposal outcomes after their deadlines, and exposes proposal/vote views.
 
 use soroban_sdk::{
     contract, contractimpl, contracttype, Address, Env, Map, Symbol, Vec, String,
@@ -56,6 +60,19 @@ pub struct VotingContract;
 
 #[contractimpl]
 impl VotingContract {
+    /// Initializes proposal storage and links the treasury contract.
+    ///
+    /// # Authorization
+    /// Requires authorization from `admin`.
+    ///
+    /// # Panics
+    /// Does not explicitly guard against reinitialization.
+    ///
+    /// # Events
+    /// Emits no events.
+    ///
+    /// # Returns
+    /// Returns nothing.
     pub fn initialize(env: Env, admin: Address, treasury: Address) {
         admin.require_auth();
         env.storage().instance().set(&DataKey::Admin, &admin);
@@ -64,7 +81,19 @@ impl VotingContract {
         env.storage().instance().set(&DataKey::Proposals, &Vec::<Proposal>::new(&env));
     }
 
-    /// Create a new governance proposal.
+    /// Creates a new governance proposal with a deadline and quorum.
+    ///
+    /// # Authorization
+    /// Requires authorization from `proposer`.
+    ///
+    /// # Panics
+    /// Does not explicitly panic for valid Soroban storage operations.
+    ///
+    /// # Events
+    /// Emits `proposal_created` with `(proposal_id, proposer)`.
+    ///
+    /// # Returns
+    /// Returns the newly assigned proposal id.
     pub fn create_proposal(
         env: Env,
         proposer: Address,
@@ -116,7 +145,20 @@ impl VotingContract {
         id
     }
 
-    /// Member casts a vote on a proposal.
+    /// Casts a yes/no vote for an active proposal.
+    ///
+    /// # Authorization
+    /// Requires authorization from `voter`.
+    ///
+    /// # Panics
+    /// Panics if the proposal does not exist, is not active, the deadline has
+    /// passed, or the voter has already voted.
+    ///
+    /// # Events
+    /// Emits `vote_cast` with `(proposal_id, voter, approve)`.
+    ///
+    /// # Returns
+    /// Returns nothing.
     pub fn vote(env: Env, voter: Address, proposal_id: u32, approve: bool) {
         voter.require_auth();
 
@@ -158,7 +200,20 @@ impl VotingContract {
         );
     }
 
-    /// Finalize a proposal after deadline.
+    /// Finalizes an active proposal after its voting deadline.
+    ///
+    /// # Authorization
+    /// No authorization is required.
+    ///
+    /// # Panics
+    /// Panics if the proposal does not exist, is already finalized, or the
+    /// voting deadline has not passed.
+    ///
+    /// # Events
+    /// Emits `proposal_finalized` with `(proposal_id, status)`.
+    ///
+    /// # Returns
+    /// Returns the proposal's final status.
     pub fn finalize(env: Env, proposal_id: u32) -> ProposalStatus {
         let mut proposals: Vec<Proposal> = env.storage().instance()
             .get(&DataKey::Proposals).unwrap();
@@ -192,12 +247,39 @@ impl VotingContract {
         status
     }
 
+    /// Returns all proposals stored by the voting contract.
+    ///
+    /// # Authorization
+    /// No authorization is required.
+    ///
+    /// # Panics
+    /// Does not panic.
+    ///
+    /// # Events
+    /// Emits no events.
+    ///
+    /// # Returns
+    /// Returns a vector of proposals, or an empty vector if none exist.
     pub fn get_proposals(env: Env) -> Vec<Proposal> {
         env.storage().instance()
             .get(&DataKey::Proposals)
             .unwrap_or(Vec::new(&env))
     }
 
+    /// Returns the vote map for a proposal.
+    ///
+    /// # Authorization
+    /// No authorization is required.
+    ///
+    /// # Panics
+    /// Does not panic.
+    ///
+    /// # Events
+    /// Emits no events.
+    ///
+    /// # Returns
+    /// Returns a map from voter address to approval choice, or an empty map if
+    /// no votes are recorded.
     pub fn get_votes(env: Env, proposal_id: u32) -> Map<Address, bool> {
         env.storage().persistent()
             .get(&DataKey::Votes(proposal_id))
