@@ -1,4 +1,8 @@
 #![no_std]
+//! Cooperative rule configuration contract for CoopFinance.
+//!
+//! Stores contract addresses and mutable cooperative rules such as contribution
+//! cadence, loan limits, interest, voting quorum, and late penalties.
 
 use soroban_sdk::{
     contract, contractimpl, contracttype, Address, Env, Symbol, Vec,
@@ -31,6 +35,19 @@ pub struct GovernanceContract;
 
 #[contractimpl]
 impl GovernanceContract {
+    /// Initializes linked contract addresses and default cooperative rules.
+    ///
+    /// # Authorization
+    /// Requires authorization from `admin`.
+    ///
+    /// # Panics
+    /// Does not explicitly guard against reinitialization.
+    ///
+    /// # Events
+    /// Emits no events.
+    ///
+    /// # Returns
+    /// Returns nothing.
     pub fn initialize(
         env: Env,
         admin: Address,
@@ -57,6 +74,19 @@ impl GovernanceContract {
         env.storage().instance().set(&DataKey::Rules, &rules);
     }
 
+    /// Replaces the active cooperative rules.
+    ///
+    /// # Authorization
+    /// Requires authorization from `admin`, which must match the stored admin.
+    ///
+    /// # Panics
+    /// Panics if `admin` is not the stored admin.
+    ///
+    /// # Events
+    /// Emits `rules_updated`.
+    ///
+    /// # Returns
+    /// Returns nothing.
     pub fn update_rules(env: Env, admin: Address, rules: CoopRules) {
         admin.require_auth();
         Self::require_admin(&env, &admin);
@@ -64,6 +94,19 @@ impl GovernanceContract {
         env.events().publish((Symbol::new(&env, "rules_updated"),), ());
     }
 
+    /// Returns the current cooperative rules.
+    ///
+    /// # Authorization
+    /// No authorization is required.
+    ///
+    /// # Panics
+    /// Panics if rules have not been initialized.
+    ///
+    /// # Events
+    /// Emits no events.
+    ///
+    /// # Returns
+    /// Returns the stored `CoopRules`.
     pub fn get_rules(env: Env) -> CoopRules {
         env.storage().instance().get(&DataKey::Rules).unwrap()
     }

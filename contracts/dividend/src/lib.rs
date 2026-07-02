@@ -1,4 +1,8 @@
 #![no_std]
+//! Dividend distribution contract for CoopFinance groups.
+//!
+//! Distributes available profit across recipients by share weight and stores a
+//! history of executed distributions.
 
 use soroban_sdk::{
     contract, contractimpl, contracttype, token, Address, Env, Symbol, Vec,
@@ -31,6 +35,19 @@ pub struct DividendContract;
 
 #[contractimpl]
 impl DividendContract {
+    /// Initializes the dividend contract.
+    ///
+    /// # Authorization
+    /// Requires authorization from `admin`.
+    ///
+    /// # Panics
+    /// Does not explicitly guard against reinitialization.
+    ///
+    /// # Events
+    /// Emits no events.
+    ///
+    /// # Returns
+    /// Returns nothing.
     pub fn initialize(env: Env, admin: Address, asset: Address, treasury: Address) {
         admin.require_auth();
         env.storage().instance().set(&DataKey::Admin, &admin);
@@ -41,10 +58,25 @@ impl DividendContract {
             .set(&DataKey::Distributions, &Vec::<Distribution>::new(&env));
     }
 
-    /// Distribute profit proportionally based on each member's share weight.
+    /// Distributes profit proportionally based on each member's share weight.
     ///
     /// `recipients` and `shares` must be equal length.
     /// Each member receives: `profit * (member_shares / total_shares)`
+    ///
+    /// # Authorization
+    /// Requires authorization from `admin`, which must match the stored admin.
+    ///
+    /// # Panics
+    /// Panics if `admin` is not the stored admin, if recipients and shares have
+    /// different lengths, if `total_profit` is not positive, if total shares are
+    /// zero, or if a token transfer fails.
+    ///
+    /// # Events
+    /// Emits `dividend_distributed` with `(distribution_id, total_profit,
+    /// recipient_count)`.
+    ///
+    /// # Returns
+    /// Returns the newly assigned distribution id.
     pub fn distribute(
         env: Env,
         admin: Address,
@@ -109,6 +141,19 @@ impl DividendContract {
         id
     }
 
+    /// Returns all recorded dividend distributions.
+    ///
+    /// # Authorization
+    /// No authorization is required.
+    ///
+    /// # Panics
+    /// Does not panic.
+    ///
+    /// # Events
+    /// Emits no events.
+    ///
+    /// # Returns
+    /// Returns a vector of distributions, or an empty vector if none exist.
     pub fn get_distributions(env: Env) -> Vec<Distribution> {
         env.storage().instance()
             .get(&DataKey::Distributions)
