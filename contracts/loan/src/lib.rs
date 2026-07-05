@@ -1,41 +1,75 @@
 #![no_std]
 
+//! Member-loan contract for a cooperative.
+//!
+//! [`LoanContract`] is the lifecycle owner of every loan in the coop:
+//! a member calls [`request_loan`] to file an application, governance
+//! (or the admin) calls [`approve_loan`] to disburse funds from the
+//! treasury, and the borrower repays in one or more calls to [`repay`].
+//!
+//! All amounts are denominated in token base units (7 decimals on USDC),
+//! and interest is computed in basis points against the principal only.
+
 use soroban_sdk::{
     contract, contractimpl, contracttype, token, Address, Env, Symbol, Vec, String,
 };
 
+/// Storage keys for [`LoanContract`].
 #[contracttype]
 #[derive(Clone)]
 pub enum DataKey {
+    /// Admin address authorized to approve loans.
     Admin,
+    /// Address of the sibling treasury contract.
     TreasuryContract,
+    /// Address of the SAC22 token used for disbursement and repayment.
     AssetAddress,
+    /// Append-only log of every [`Loan`] created on this contract.
     Loans,
+    /// Monotonically increasing counter used to assign loan IDs.
     LoanCounter,
 }
 
+/// Status of a loan through its lifecycle.
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
 pub enum LoanStatus {
-    Pending,   // Awaiting approval vote
-    Approved,  // Disbursed
-    Repaid,    // Fully repaid
-    Rejected,  // Rejected by governance
-    Defaulted, // Past due date, not repaid
+    /// Awaiting approval vote.
+    Pending,
+    /// Disbursed to the borrower.
+    Approved,
+    /// Fully repaid (principal + interest).
+    Repaid,
+    /// Rejected by governance.
+    Rejected,
+    /// Past due date, not repaid.
+    Defaulted,
 }
 
+/// Single loan record. Fields are set incrementally as the loan moves
+/// through the [`LoanStatus`] lifecycle.
 #[contracttype]
 #[derive(Clone, Debug)]
 pub struct Loan {
+    /// Auto-incremented ID assigned at request time.
     pub id: u32,
+    /// Address of the borrower; principal is disbursed to this account.
     pub borrower: Address,
+    /// Principal amount in token base units.
     pub amount: i128,
-    pub interest_bps: u32,      // basis points, e.g. 500 = 5%
-    pub repayment_due: u64,     // ledger timestamp deadline
+    /// Interest rate in basis points (500 = 5.00%).
+    pub interest_bps: u32,
+    /// Ledger timestamp at which repayment is due.
+    pub repayment_due: u64,
+    /// Running total of all repayments applied to this loan.
     pub amount_repaid: i128,
+    /// Current status; see [`LoanStatus`].
     pub status: LoanStatus,
+    /// Human-readable purpose supplied by the borrower.
     pub purpose: String,
+    /// Ledger timestamp when the loan was requested.
     pub requested_at: u64,
+    /// Ledger timestamp when the loan was approved (0 until then).
     pub approved_at: u64,
 }
 
@@ -44,6 +78,17 @@ pub struct LoanContract;
 
 #[contractimpl]
 impl LoanContract {
+    /// Initialize the loan contract.
+    ///
+    /// Stores the admin, treasury contract address, asset address, and an
+    /// empty loan counter + log. Must be called exactly once.
+    ///
+    /// # Panics
+    /// Panics with `"already initialized"` if the contract already has an
+    /// admin on file.
+    ///
+    /// # Authorization
+    /// Requires auth from `admin`.
     pub fn initialize(env: Env, admin: Address, treasury: Address, asset: Address) {
         admin.require_auth();
         if env.storage().instance().has(&DataKey::Admin) {
@@ -187,11 +232,19 @@ impl LoanContract {
         loans.get(idx).unwrap()
     }
 
+    /// Internal: assert that `caller` is the admin registered at [`initialize`].
+    ///
+    /// # Panics
+    /// Panics with `"unauthorized"` when `caller` does not match.
     fn require_admin(env: &Env, caller: &Address) {
         let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
         if admin != *caller { panic!("unauthorized"); }
     }
 
+    /// Internal: linear search for a loan by ID in the on-chain log.
+    ///
+    /// # Panics
+    /// Panics with `"loan not found"` when no loan has the supplied ID.
     fn find_loan_idx(loans: &Vec<Loan>, id: u32) -> u32 {
         for i in 0..loans.len() {
             if loans.get(i).unwrap().id == id {

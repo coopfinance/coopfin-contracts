@@ -1,54 +1,97 @@
 #![no_std]
 
+//! On-chain governance: proposal + simple yes/no voting for a cooperative.
+//!
+//! [`VotingContract`] owns the lifecycle of every [`Proposal`]: members
+//! call [`create_proposal`] to open one, then [`vote`] to cast their
+//! ballot, and finally [`finalize`] to close the proposal once the
+//! deadline has passed.
+//!
+//! Pass / fail criteria are intentionally simple: a proposal passes iff
+//! `votes_for > votes_against` AND total votes reach the configured quorum.
+//! There is no delegate voting and no vote replacement; one address, one
+//! vote per proposal.
+
 use soroban_sdk::{
     contract, contractimpl, contracttype, Address, Env, Map, Symbol, Vec, String,
 };
 
+/// Storage keys for [`VotingContract`].
 #[contracttype]
 #[derive(Clone)]
 pub enum DataKey {
+    /// Admin address (informational; not enforced in current code).
     Admin,
+    /// Address of the sibling treasury contract.
     TreasuryContract,
+    /// Append-only log of every [`Proposal`] created on this contract.
     Proposals,
+    /// Monotonically increasing counter used to assign proposal IDs.
     ProposalCounter,
-    Votes(u32), // proposal_id -> Map<Address, bool>
+    /// Persistent storage: per-proposal map of `voter -> approve`.
+    Votes(u32),
 }
 
+/// Lifecycle status of a [`Proposal`].
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
 pub enum ProposalStatus {
+    /// Open for voting; [`vote`] is allowed.
     Active,
+    /// Deadline passed and quorum + majority reached.
     Passed,
+    /// Deadline passed and quorum / majority not reached.
     Failed,
+    /// Passed proposal whose payload has been executed (terminal state).
     Executed,
 }
 
+/// Coarse categorization of a proposal; useful for off-chain UIs.
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
 pub enum ProposalType {
-    LoanApproval,    // Approve a member loan
-    TreasurySpend,   // Authorize a treasury withdrawal
-    AddMember,       // Add a new member to the coop
-    RemoveMember,    // Remove a member from the coop
-    UpdateRule,      // Change a group rule (interest rate, contrib amount, etc.)
-    General,         // General governance proposal
+    /// Approve a member loan.
+    LoanApproval,
+    /// Authorize a treasury withdrawal.
+    TreasurySpend,
+    /// Add a new member to the coop.
+    AddMember,
+    /// Remove a member from the coop.
+    RemoveMember,
+    /// Change a group rule (interest rate, contribution amount, etc.).
+    UpdateRule,
+    /// General governance proposal.
+    General,
 }
 
+/// Single proposal record.
 #[contracttype]
 #[derive(Clone, Debug)]
 pub struct Proposal {
+    /// Auto-incremented ID assigned at create time.
     pub id: u32,
+    /// Address that opened the proposal.
     pub proposer: Address,
+    /// Coarse proposal category.
     pub proposal_type: ProposalType,
+    /// Short title (max 64 chars enforced off-chain).
     pub title: String,
+    /// Long-form description (markdown encouraged off-chain).
     pub description: String,
+    /// Running total of yes votes.
     pub votes_for: u32,
+    /// Running total of no votes.
     pub votes_against: u32,
-    pub quorum: u32,          // Minimum votes required
-    pub deadline: u64,        // Ledger timestamp
+    /// Minimum total votes required for the proposal to pass.
+    pub quorum: u32,
+    /// Ledger timestamp after which voting is closed.
+    pub deadline: u64,
+    /// Current status; see [`ProposalStatus`].
     pub status: ProposalStatus,
+    /// Ledger timestamp at creation.
     pub created_at: u64,
-    pub payload: String,      // JSON-encoded action payload
+    /// JSON-encoded action payload consumed by an executor contract.
+    pub payload: String,
 }
 
 #[contract]
@@ -56,6 +99,13 @@ pub struct VotingContract;
 
 #[contractimpl]
 impl VotingContract {
+    /// Initialize the voting contract.
+    ///
+    /// Stores the admin, treasury contract address, an empty proposal
+    /// counter, and an empty proposals log. Must be called exactly once.
+    ///
+    /// # Authorization
+    /// Requires auth from `admin`.
     pub fn initialize(env: Env, admin: Address, treasury: Address) {
         admin.require_auth();
         env.storage().instance().set(&DataKey::Admin, &admin);
@@ -192,18 +242,29 @@ impl VotingContract {
         status
     }
 
+    /// Return every proposal ever created on this contract, oldest first.
+///
+/// Returns an empty vector if no proposals have been created yet.
     pub fn get_proposals(env: Env) -> Vec<Proposal> {
         env.storage().instance()
             .get(&DataKey::Proposals)
             .unwrap_or(Vec::new(&env))
     }
 
+    /// Return the full `voter -> approve` map for `proposal_id`.
+    ///
+    /// Returns an empty map if no votes have been cast.
     pub fn get_votes(env: Env, proposal_id: u32) -> Map<Address, bool> {
         env.storage().persistent()
             .get(&DataKey::Votes(proposal_id))
             .unwrap_or(Map::new(&env))
     }
 
+    /// Internal: linear search for a proposal by ID in the on-chain log.
+    ///
+    /// # Panics
+    /// Panics with `"proposal not found"` when no proposal has the
+    /// supplied ID.
     fn find_proposal_idx(proposals: &Vec<Proposal>, id: u32) -> u32 {
         for i in 0..proposals.len() {
             if proposals.get(i).unwrap().id == id { return i; }
