@@ -1,5 +1,30 @@
 #![no_std]
 
+//! # TreasuryContract
+//!
+//! Soroban smart contract that implements the group wallet for a cooperative:
+//! member registration, periodic contribution collection, and admin-gated
+//! withdrawals.
+//!
+//! ## Storage layout
+//! All state lives in `env.storage().instance()` (group metadata, members
+//! list, totals) and `env.storage().persistent()` (per-member contribution
+//! history). Keys are described in [`DataKey`].
+//!
+//! ## Authorization model
+//! * `initialize` — admin only; re-initialization is rejected.
+//! * `add_member`, `withdraw` — admin only.
+//! * `contribute` — member only; signer must be in the members list.
+//! * Read-only views — open to anyone.
+//!
+//! ## Events
+//! * `member_added(member)`
+//! * `contribution(member, amount, period)`
+//! * `withdrawal(to, amount)`
+//!
+//! ## Panics
+//! All `panic!` conditions are documented on the individual functions.
+
 use soroban_sdk::{
     contract, contractimpl, contracttype, token, Address, Env, Symbol, Vec, String,
 };
@@ -62,6 +87,25 @@ pub struct TreasuryContract;
 #[contractimpl]
 impl TreasuryContract {
     /// Initialize a new cooperative treasury group.
+    ///
+    /// # Authorization
+    /// Requires `admin.require_auth()`.
+    ///
+    /// # Arguments
+    /// * `admin` - The address authorized to add members and withdraw funds.
+    /// * `group_name` - Human-readable group name (stored verbatim).
+    /// * `asset` - The SAC token contract address used for contributions and
+    ///   withdrawals.
+    ///
+    /// # Returns
+    /// A fresh [`GroupInfo`] snapshot reflecting the just-initialized state
+    /// (zero members, zero contributions, `is_active = true`).
+    ///
+    /// # Events
+    /// None.
+    ///
+    /// # Panics
+    /// If the contract has already been initialized.
     pub fn initialize(
         env: Env,
         admin: Address,
@@ -92,6 +136,21 @@ impl TreasuryContract {
     }
 
     /// Add a new member to the cooperative.
+    ///
+    /// # Authorization
+    /// Requires `admin.require_auth()` and `admin` must equal the stored
+    /// admin address.
+    ///
+    /// # Arguments
+    /// * `admin` - The admin performing the addition.
+    /// * `member` - Address to add. If already a member, the call is a
+    ///   no-op (idempotent).
+    ///
+    /// # Events
+    /// Emits `member_added(member)` only if `member` was not already present.
+    ///
+    /// # Panics
+    /// If `admin` is not the stored admin.
     pub fn add_member(env: Env, admin: Address, member: Address) {
         admin.require_auth();
         Self::require_admin(&env, &admin);
@@ -112,6 +171,24 @@ impl TreasuryContract {
     }
 
     /// Record a member contribution. Transfers USDC from member to this contract.
+    ///
+    /// # Authorization
+    /// Requires `member.require_auth()`, and `member` must be in the stored
+    /// members list.
+    ///
+    /// # Arguments
+    /// * `member` - The contributing member; must sign the call.
+    /// * `amount` - Token amount to contribute. Must be strictly positive.
+    /// * `period` - Cooperative-defined period number (e.g. month index)
+    ///   stored alongside the contribution record.
+    ///
+    /// # Events
+    /// Emits `contribution(member, amount, period)` after the token transfer
+    /// succeeds and the record has been stored.
+    ///
+    /// # Panics
+    /// * If `amount <= 0`.
+    /// * If `member` is not in the members list.
     pub fn contribute(env: Env, member: Address, amount: i128, period: u32) {
         member.require_auth();
         Self::require_member(&env, &member);
@@ -155,6 +232,24 @@ impl TreasuryContract {
     }
 
     /// Withdraw funds — only callable by admin (e.g. for approved loans or expenses).
+    ///
+    /// # Authorization
+    /// Requires `admin.require_auth()` and `admin` must equal the stored
+    /// admin address.
+    ///
+    /// # Arguments
+    /// * `admin` - The admin performing the withdrawal.
+    /// * `to` - Recipient address. May be a member, a loan contract, or any
+    ///   arbitrary address authorized by the cooperative.
+    /// * `amount` - Token amount to transfer. The token client will reject
+    ///   the transfer if the contract's balance is insufficient.
+    ///
+    /// # Events
+    /// Emits `withdrawal(to, amount)` after the token transfer succeeds.
+    ///
+    /// # Panics
+    /// * If `admin` is not the stored admin.
+    /// * If the contract does not hold at least `amount` of the asset.
     pub fn withdraw(env: Env, admin: Address, to: Address, amount: i128) {
         admin.require_auth();
         Self::require_admin(&env, &admin);
@@ -170,6 +265,18 @@ impl TreasuryContract {
     }
 
     /// Get current treasury balance.
+    ///
+    /// # Authorization
+    /// None — read-only view.
+    ///
+    /// # Returns
+    /// The contract's current token balance in the asset's base units.
+    ///
+    /// # Events
+    /// None.
+    ///
+    /// # Panics
+    /// If the contract has not been initialized (no asset address stored).
     pub fn balance(env: Env) -> i128 {
         let asset: Address = env.storage().instance().get(&DataKey::AssetAddress).unwrap();
         let token_client = token::Client::new(&env, &asset);
@@ -177,6 +284,19 @@ impl TreasuryContract {
     }
 
     /// Get all members.
+    ///
+    /// # Authorization
+    /// None — read-only view.
+    ///
+    /// # Returns
+    /// `Vec<Address>` of all members in insertion order. Returns an empty
+    /// vector if no member has been added yet.
+    ///
+    /// # Events
+    /// None.
+    ///
+    /// # Panics
+    /// Never panics.
     pub fn get_members(env: Env) -> Vec<Address> {
         env.storage().instance()
             .get(&DataKey::Members)
@@ -184,6 +304,22 @@ impl TreasuryContract {
     }
 
     /// Get contribution history for a member.
+    ///
+    /// # Authorization
+    /// None — read-only view.
+    ///
+    /// # Arguments
+    /// * `member` - The member whose history to fetch.
+    ///
+    /// # Returns
+    /// `Vec<ContributionRecord>` in insertion order. Returns an empty vector
+    /// for unknown members or members who have not yet contributed.
+    ///
+    /// # Events
+    /// None.
+    ///
+    /// # Panics
+    /// Never panics.
     pub fn get_contributions(env: Env, member: Address) -> Vec<ContributionRecord> {
         env.storage().persistent()
             .get(&DataKey::Contributions(member))
@@ -191,6 +327,18 @@ impl TreasuryContract {
     }
 
     /// Get full group info.
+    ///
+    /// # Authorization
+    /// None — read-only view.
+    ///
+    /// # Returns
+    /// A fresh [`GroupInfo`] snapshot assembled from current storage.
+    ///
+    /// # Events
+    /// None.
+    ///
+    /// # Panics
+    /// If the contract has not been initialized.
     pub fn get_info(env: Env) -> GroupInfo {
         let members: Vec<Address> = env.storage().instance()
             .get(&DataKey::Members)
@@ -254,6 +402,12 @@ impl TreasuryContract {
 
     // ── Internal helpers ─────────────────────────────────────────────────────
 
+    /// Verify that `caller` matches the stored admin address.
+    ///
+    /// Internal helper. Not part of the contract's public ABI.
+    ///
+    /// # Panics
+    /// If `caller` does not match the stored admin (or no admin is set).
     fn require_admin(env: &Env, caller: &Address) {
         let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
         if admin != *caller {
@@ -261,6 +415,12 @@ impl TreasuryContract {
         }
     }
 
+    /// Verify that `caller` is in the stored members list.
+    ///
+    /// Internal helper. Not part of the contract's public ABI.
+    ///
+    /// # Panics
+    /// If `caller` is not in the members list (or no members have been added).
     fn require_member(env: &Env, caller: &Address) {
         let members: Vec<Address> = env.storage().instance()
             .get(&DataKey::Members)
