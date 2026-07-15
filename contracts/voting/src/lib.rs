@@ -4,6 +4,9 @@ use soroban_sdk::{
     contract, contractimpl, contracttype, Address, Env, Map, Symbol, Vec, String,
 };
 
+mod ttl;
+pub use ttl::{bump_instance, bump_persistent, emit_bumped, EXTEND_TO_LEDGERS, THRESHOLD_LEDGERS};
+
 #[contracttype]
 #[derive(Clone)]
 pub enum DataKey {
