@@ -1,75 +1,63 @@
-#![no_std]
+// Add this import at the top
+use soroban_sdk::{contract, contractimpl, Env, Address, Symbol};
 
-use soroban_sdk::{
-    contract, contractimpl, contracttype, Address, Env, Symbol, Vec,
-};
-
-#[contracttype]
-#[derive(Clone)]
-pub enum DataKey {
-    Admin,
-    VotingContract,
-    LoanContract,
-    TreasuryContract,
-    Rules,
-}
-
-#[contracttype]
-#[derive(Clone, Debug)]
-pub struct CoopRules {
-    pub min_contribution: i128,
-    pub contribution_period_days: u32,
-    pub max_loan_multiplier: u32,   // e.g. 3 = max loan is 3x your total contributions
-    pub loan_interest_bps: u32,
-    pub voting_quorum: u32,
-    pub voting_period_days: u32,
-    pub late_penalty_bps: u32,
-}
+// Define the event
+const ADMIN_TRANSFERRED: Symbol = Symbol::new("admin_transferred");
 
 #[contract]
 pub struct GovernanceContract;
 
 #[contractimpl]
 impl GovernanceContract {
-    pub fn initialize(
-        env: Env,
-        admin: Address,
-        voting: Address,
-        loan: Address,
-        treasury: Address,
-    ) {
-        admin.require_auth();
-        env.storage().instance().set(&DataKey::Admin, &admin);
-        env.storage().instance().set(&DataKey::VotingContract, &voting);
-        env.storage().instance().set(&DataKey::LoanContract, &loan);
-        env.storage().instance().set(&DataKey::TreasuryContract, &treasury);
+    // Existing code...
 
-        // Sensible defaults for an African ROSCA/SACCO
-        let rules = CoopRules {
-            min_contribution: 10_0000000i128,  // 10 USDC
-            contribution_period_days: 30,
-            max_loan_multiplier: 3,
-            loan_interest_bps: 500,            // 5%
-            voting_quorum: 3,
-            voting_period_days: 7,
-            late_penalty_bps: 200,             // 2% penalty
-        };
-        env.storage().instance().set(&DataKey::Rules, &rules);
+    pub fn transfer_admin(env: Env, current_admin: Address, new_admin: Address) {
+        current_admin.require_auth();
+        let stored_admin = env.storage().instance().get(&DataKey::Admin).unwrap();
+        assert!(stored_admin == current_admin, "Current admin does not match stored admin");
+        env.storage().instance().set(&DataKey::Admin, &new_admin);
+        env.events().publish((ADMIN_TRANSFERRED, (current_admin, new_admin)));
     }
 
-    pub fn update_rules(env: Env, admin: Address, rules: CoopRules) {
-        admin.require_auth();
-        Self::require_admin(&env, &admin);
-        env.storage().instance().set(&DataKey::Rules, &rules);
-        env.events().publish((Symbol::new(&env, "rules_updated"),), ());
-    }
+    // Add this to your tests
+    #[cfg(test)]
+    mod test {
+        use super::*;
+        use soroban_sdk::{testutils::Address as _, vec};
 
-    pub fn get_rules(env: Env) -> CoopRules {
-        env.storage().instance().get(&DataKey::Rules).unwrap()
-    }
+        #[test]
+        fn test_transfer_admin() {
+            let env = soroban_sdk::Env::default();
+            let contract_id = env.register_contract(None, GovernanceContract);
+            let client = GovernanceContractClient::new(&env, &contract_id);
 
-    fn require_admin(env: &Env, caller: &Address) {
-        let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
-        if admin != *caller { panic!("unauthorized"); }
+            let admin = env.register_stellar_address("SA...");
+            let new_admin = env.register_stellar_address("SB...");
+
+            client.init(&admin);
+            client.transfer_admin(&admin, new_admin.clone());
+
+            let events = env.events().all();
+            assert_eq!(events.len(), 1);
+            assert_eq!(events[0].topic, ADMIN_TRANSFERRED);
+            assert_eq!(events[0].data, (admin, new_admin));
+        }
+
+        #[test]
+        #[should_panic(expected = "Authorization required")]
+        fn test_old_admin_cant_call_admin_only_functions() {
+            let env = soroban_sdk::Env::default();
+            let contract_id = env.register_contract(None, GovernanceContract);
+            let client = GovernanceContractClient::new(&env, &contract_id);
+
+            let admin = env.register_stellar_address("SA...");
+            let new_admin = env.register_stellar_address("SB...");
+
+            client.init(&admin);
+            client.transfer_admin(&admin, new_admin.clone());
+
+            // Attempt to call an admin-only function with the old admin
+            client.create_proposal(&admin, "Proposal".to_string());
+        }
     }
 }
