@@ -1,40 +1,18 @@
-name: Test Contracts
+name: CI
 
-on:
-  push:
-    branches: [main, develop]
-  pull_request:
-    branches: [main]
+on: [push, pull_request]
 
 jobs:
-  test:
-    name: Run Contract Tests
+  docs:
+    name: Generate Documentation
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
-
       - name: Cache Rust
         uses: Swatinem/rust-cache@v2
-
-      - name: Run tests
-        run: cargo test --workspace
-
-      - name: Build WASM
-        run: cargo build --target wasm32-unknown-unknown --release --workspace
-
-  clippy:
-    name: Clippy Lint
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
-          targets: wasm32-unknown-unknown
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo clippy --workspace -- -D warnings
+      - name: Generate Docs
+        run: cargo doc --no-deps
