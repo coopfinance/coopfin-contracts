@@ -1,28 +1,53 @@
 #![no_std]
 
+//! Profit distribution contract for a cooperative.
+//!
+//! [`DividendContract`] accepts an admin-defined profit pool and a list of
+//! member share weights, then transfers token payouts proportionally from
+//! the contract's own balance to each recipient. Every payout is recorded
+//! on-chain as a [`Distribution`] so that the treasury can later audit
+//! who received what and when.
+//!
+//! The contract assumes the asset address is a SAC22 token whose client
+//! implements the standard [`token::Client`] `transfer` interface.
+
 use soroban_sdk::{
     contract, contractimpl, contracttype, token, Address, Env, Symbol, Vec,
 };
 
+/// Storage keys for [`DividendContract`].
 #[contracttype]
 #[derive(Clone)]
 pub enum DataKey {
+    /// Admin address authorized to call [`DividendContract::distribute`].
     Admin,
+    /// Address of the SAC22 token used for payouts.
     AssetAddress,
+    /// Address of the sibling treasury contract (informational; not enforced).
     TreasuryContract,
+    /// Append-only log of every [`Distribution`] executed by this contract.
     Distributions,
+    /// Monotonically increasing counter used to assign distribution IDs.
     DistributionCounter,
 }
 
+/// Single on-chain record of one profit-distribution event.
 #[contracttype]
 #[derive(Clone, Debug)]
 pub struct Distribution {
+    /// Auto-incremented ID assigned at execution time.
     pub id: u32,
+    /// Total profit (in token base units) that was available to distribute.
     pub total_profit: i128,
+    /// Sum of all `shares` in the call that produced this distribution.
     pub total_shares: i128,
+    /// Recipients in the same order as the call's `recipients` argument.
     pub recipients: Vec<Address>,
+    /// Payout actually transferred to each recipient (rounded down).
     pub amounts: Vec<i128>,
+    /// Ledger timestamp at which the distribution was executed.
     pub executed_at: u64,
+    /// Human-readable period label (e.g. `"Q3-2026"`) supplied by the admin.
     pub period: String,
 }
 
@@ -31,6 +56,13 @@ pub struct DividendContract;
 
 #[contractimpl]
 impl DividendContract {
+    /// Initialize the dividend contract.
+    ///
+    /// Stores the admin, asset address, treasury contract address, and an
+    /// empty distribution counter + log. Must be called exactly once.
+    ///
+    /// # Authorization
+    /// Requires auth from `admin`.
     pub fn initialize(env: Env, admin: Address, asset: Address, treasury: Address) {
         admin.require_auth();
         env.storage().instance().set(&DataKey::Admin, &admin);
@@ -109,12 +141,19 @@ impl DividendContract {
         id
     }
 
+    /// Return the full on-chain history of [`Distribution`] events, oldest first.
+    ///
+    /// Returns an empty vector if no distributions have been executed yet.
     pub fn get_distributions(env: Env) -> Vec<Distribution> {
         env.storage().instance()
             .get(&DataKey::Distributions)
             .unwrap_or(Vec::new(&env))
     }
 
+    /// Internal: assert that `caller` is the admin registered at [`initialize`].
+    ///
+    /// # Panics
+    /// Panics with `"unauthorized"` when `caller` does not match.
     fn require_admin(env: &Env, caller: &Address) {
         let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
         if admin != *caller { panic!("unauthorized"); }

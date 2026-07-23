@@ -38,3 +38,31 @@ jobs:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --workspace -- -D warnings
+
+  docs:
+    name: Build rustdoc (warnings as errors)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build documentation
+        # -D warnings promotes any doc warning to a CI failure so that
+        # broken intra-doc links or missing docs are caught early.
+        # --no-deps skips generating docs for Soroban SDK + transitive deps.
+        run: cargo doc --workspace --no-deps -- -D warnings
+
+      - name: Upload docs artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rustdoc-${{ github.sha }}
+          path: target/doc
+          if-no-files-found: warn
+          retention-days: 14
