@@ -1,7 +1,7 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contractimpl, contracttype, token, Address, Env, Symbol, Vec,
+    contract, contractimpl, contracttype, token, Address, Env, String, Symbol, Vec,
 };
 
 #[contracttype]
@@ -39,6 +39,18 @@ impl DividendContract {
         env.storage().instance().set(&DataKey::DistributionCounter, &0u32);
         env.storage().instance()
             .set(&DataKey::Distributions, &Vec::<Distribution>::new(&env));
+    }
+
+    /// Transfer admin rights to a new address.
+    pub fn transfer_admin(env: Env, current_admin: Address, new_admin: Address) {
+        current_admin.require_auth();
+        Self::require_admin(&env, &current_admin);
+
+        env.storage().instance().set(&DataKey::Admin, &new_admin);
+        env.events().publish(
+            (Symbol::new(&env, "admin_transferred"),),
+            (current_admin, new_admin),
+        );
     }
 
     /// Distribute profit proportionally based on each member's share weight.
@@ -118,5 +130,74 @@ impl DividendContract {
     fn require_admin(env: &Env, caller: &Address) {
         let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
         if admin != *caller { panic!("unauthorized"); }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use soroban_sdk::testutils::Address as _;
+    use soroban_sdk::{token::StellarAssetClient, Env, String, Vec};
+
+    fn setup() -> (Env, DividendContractClient<'static>, Address) {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, DividendContract);
+        let client = DividendContractClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        let treasury = Address::generate(&env);
+        let token_admin = Address::generate(&env);
+        let asset = env.register_stellar_asset_contract_v2(token_admin);
+        let asset_address = asset.address();
+
+        StellarAssetClient::new(&env, &asset_address).mint(&contract_id, &1_000_0000000i128);
+        client.initialize(&admin, &asset_address, &treasury);
+
+        (env, client, admin)
+    }
+
+    fn single_recipient_distribution(env: &Env) -> (Vec<Address>, Vec<i128>) {
+        let recipient = Address::generate(env);
+        let mut recipients = Vec::new(env);
+        let mut shares = Vec::new(env);
+        recipients.push_back(recipient);
+        shares.push_back(1i128);
+        (recipients, shares)
+    }
+
+    #[test]
+    fn test_transfer_admin_allows_new_admin_to_distribute() {
+        let (env, client, admin) = setup();
+        let new_admin = Address::generate(&env);
+        let (recipients, shares) = single_recipient_distribution(&env);
+
+        client.transfer_admin(&admin, &new_admin);
+        let distribution_id = client.distribute(
+            &new_admin,
+            &recipients,
+            &shares,
+            &100_0000000i128,
+            &String::from_str(&env, "2026-07"),
+        );
+
+        assert_eq!(distribution_id, 1);
+        assert_eq!(client.get_distributions().len(), 1);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_old_admin_cannot_call_admin_only_after_transfer() {
+        let (env, client, admin) = setup();
+        let new_admin = Address::generate(&env);
+        let (recipients, shares) = single_recipient_distribution(&env);
+        client.transfer_admin(&admin, &new_admin);
+
+        client.distribute(
+            &admin,
+            &recipients,
+            &shares,
+            &100_0000000i128,
+            &String::from_str(&env, "2026-07"),
+        );
     }
 }

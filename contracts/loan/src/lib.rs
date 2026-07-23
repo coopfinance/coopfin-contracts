@@ -56,6 +56,18 @@ impl LoanContract {
         env.storage().instance().set(&DataKey::Loans, &Vec::<Loan>::new(&env));
     }
 
+    /// Transfer admin rights to a new address.
+    pub fn transfer_admin(env: Env, current_admin: Address, new_admin: Address) {
+        current_admin.require_auth();
+        Self::require_admin(&env, &current_admin);
+
+        env.storage().instance().set(&DataKey::Admin, &new_admin);
+        env.events().publish(
+            (Symbol::new(&env, "admin_transferred"),),
+            (current_admin, new_admin),
+        );
+    }
+
     /// Member submits a loan request.
     pub fn request_loan(
         env: Env,
@@ -199,5 +211,63 @@ impl LoanContract {
             }
         }
         panic!("loan not found");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use soroban_sdk::testutils::Address as _;
+    use soroban_sdk::{token::StellarAssetClient, Env, String};
+
+    fn setup() -> (Env, LoanContractClient<'static>, Address, Address) {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, LoanContract);
+        let client = LoanContractClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        let borrower = Address::generate(&env);
+        let treasury = Address::generate(&env);
+        let token_admin = Address::generate(&env);
+        let asset = env.register_stellar_asset_contract_v2(token_admin);
+        let asset_address = asset.address();
+
+        StellarAssetClient::new(&env, &asset_address).mint(&contract_id, &1_000_0000000i128);
+        client.initialize(&admin, &treasury, &asset_address);
+
+        (env, client, admin, borrower)
+    }
+
+    #[test]
+    fn test_transfer_admin_allows_new_admin_to_approve_loan() {
+        let (env, client, admin, borrower) = setup();
+        let new_admin = Address::generate(&env);
+        client.transfer_admin(&admin, &new_admin);
+
+        let loan_id = client.request_loan(
+            &borrower,
+            &100_0000000i128,
+            &String::from_str(&env, "Working capital"),
+            &30,
+        );
+        client.approve_loan(&new_admin, &loan_id);
+
+        assert_eq!(client.get_loan(&loan_id).status, LoanStatus::Approved);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_old_admin_cannot_call_admin_only_after_transfer() {
+        let (env, client, admin, borrower) = setup();
+        let new_admin = Address::generate(&env);
+        client.transfer_admin(&admin, &new_admin);
+
+        let loan_id = client.request_loan(
+            &borrower,
+            &100_0000000i128,
+            &String::from_str(&env, "Working capital"),
+            &30,
+        );
+        client.approve_loan(&admin, &loan_id);
     }
 }
