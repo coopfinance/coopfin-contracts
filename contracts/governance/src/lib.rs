@@ -1,5 +1,11 @@
 #![no_std]
 
+//! Cooperative governance contract.
+//!
+//! Stores default operating rules (contribution minimums, loan terms, voting
+//! thresholds) and the addresses of the voting, loan, and treasury contracts.
+//! Rules can be updated by the admin.
+
 use soroban_sdk::{
     contract, contractimpl, contracttype, Address, Env, Symbol, Vec,
 };
@@ -31,6 +37,12 @@ pub struct GovernanceContract;
 
 #[contractimpl]
 impl GovernanceContract {
+    /// Initialize governance with linked contracts and default rules.
+    ///
+    /// # Authorization
+    /// Requires caller authentication as the admin.
+    ///
+    /// Returns nothing; state and default [`CoopRules`] are set directly.
     pub fn initialize(
         env: Env,
         admin: Address,

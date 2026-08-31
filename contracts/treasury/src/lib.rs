@@ -1,5 +1,11 @@
 #![no_std]
 
+//! Cooperative treasury contract.
+//!
+//! Manages group membership, member contributions, and admin withdrawals for a
+//! ROSCA/SACCO-style cooperative. Funds are held as a Soroban token and
+//! contribution history is stored per member.
+
 use soroban_sdk::{
     contract, contractimpl, contracttype, token, Address, Env, Symbol, Vec, String,
 };
@@ -62,6 +68,18 @@ pub struct TreasuryContract;
 #[contractimpl]
 impl TreasuryContract {
     /// Initialize a new cooperative treasury group.
+    /// Initialize a new cooperative treasury group.
+    ///
+    /// # Authorization
+    /// Requires caller authentication as the group admin.
+    ///
+    /// # Panics
+    /// Panics if the contract has already been initialized.
+    ///
+    /// # Events
+    /// Emits no event; state is set directly.
+    ///
+    /// Returns the initial [`GroupInfo`] snapshot.
     pub fn initialize(
         env: Env,
         admin: Address,
@@ -92,6 +110,17 @@ impl TreasuryContract {
     }
 
     /// Add a new member to the cooperative.
+    /// Add a new member to the cooperative.
+    ///
+    /// # Authorization
+    /// Requires authentication from the group admin.
+    ///
+    /// # Panics
+    /// Panics if `admin` is not the stored admin.
+    ///
+    /// # Events
+    /// Emits `member_added` with the member address when a new address is added.
+    /// Duplicate additions are idempotent and emit no event.
     pub fn add_member(env: Env, admin: Address, member: Address) {
         admin.require_auth();
         Self::require_admin(&env, &admin);
@@ -112,6 +141,19 @@ impl TreasuryContract {
     }
 
     /// Record a member contribution. Transfers USDC from member to this contract.
+    /// Record a member contribution and transfer `amount` of the group asset
+    /// from the member into this contract.
+    ///
+    /// # Authorization
+    /// Requires authentication from the contributing member.
+    ///
+    /// # Panics
+    /// Panics if `amount` is not positive or if `member` is not in the members list.
+    ///
+    /// # Events
+    /// Emits `contribution` with `(member, amount, period)`.
+    ///
+    /// Returns nothing; state is updated in place.
     pub fn contribute(env: Env, member: Address, amount: i128, period: u32) {
         member.require_auth();
         Self::require_member(&env, &member);
@@ -155,6 +197,16 @@ impl TreasuryContract {
     }
 
     /// Withdraw funds — only callable by admin (e.g. for approved loans or expenses).
+    /// Withdraw group funds to a recipient address.
+    ///
+    /// # Authorization
+    /// Requires authentication from the group admin.
+    ///
+    /// # Panics
+    /// Panics if `admin` is not the stored admin or if the contract balance is insufficient.
+    ///
+    /// # Events
+    /// Emits `withdrawal` with `(recipient, amount)`.
     pub fn withdraw(env: Env, admin: Address, to: Address, amount: i128) {
         admin.require_auth();
         Self::require_admin(&env, &admin);
@@ -170,6 +222,11 @@ impl TreasuryContract {
     }
 
     /// Get current treasury balance.
+    /// Get the contract's current balance of the group asset.
+    ///
+    /// Read-only — no auth required.
+    ///
+    /// Returns the token balance in the asset's smallest unit.
     pub fn balance(env: Env) -> i128 {
         let asset: Address = env.storage().instance().get(&DataKey::AssetAddress).unwrap();
         let token_client = token::Client::new(&env, &asset);
@@ -177,6 +234,11 @@ impl TreasuryContract {
     }
 
     /// Get all members.
+    /// Get all member addresses.
+    ///
+    /// Read-only — no auth required.
+    ///
+    /// Returns a vector of member addresses; empty if none have been added.
     pub fn get_members(env: Env) -> Vec<Address> {
         env.storage().instance()
             .get(&DataKey::Members)
@@ -184,6 +246,12 @@ impl TreasuryContract {
     }
 
     /// Get contribution history for a member.
+    /// Get the contribution history for a specific member.
+    ///
+    /// Read-only — no auth required.
+    ///
+    /// Returns a vector of [`ContributionRecord`] entries; empty if the member
+    /// has never contributed.
     pub fn get_contributions(env: Env, member: Address) -> Vec<ContributionRecord> {
         env.storage().persistent()
             .get(&DataKey::Contributions(member))
@@ -191,6 +259,11 @@ impl TreasuryContract {
     }
 
     /// Get full group info.
+    /// Get a full snapshot of group state.
+    ///
+    /// Read-only — no auth required.
+    ///
+    /// Returns the current [`GroupInfo`].
     pub fn get_info(env: Env) -> GroupInfo {
         let members: Vec<Address> = env.storage().instance()
             .get(&DataKey::Members)

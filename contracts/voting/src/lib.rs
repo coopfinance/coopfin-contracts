@@ -1,5 +1,11 @@
 #![no_std]
 
+//! Governance voting contract.
+//!
+//! Manages proposal creation, member voting, and proposal finalization for a
+//! cooperative. Proposals can cover loans, treasury spending, membership changes,
+//! rule updates, or general governance decisions.
+
 use soroban_sdk::{
     contract, contractimpl, contracttype, Address, Env, Map, Symbol, Vec, String,
 };
@@ -56,6 +62,12 @@ pub struct VotingContract;
 
 #[contractimpl]
 impl VotingContract {
+    /// Initialize the voting contract and link it to the treasury.
+    ///
+    /// # Authorization
+    /// Requires caller authentication as the contract admin.
+    ///
+    /// Returns nothing; state is set directly.
     pub fn initialize(env: Env, admin: Address, treasury: Address) {
         admin.require_auth();
         env.storage().instance().set(&DataKey::Admin, &admin);
@@ -65,6 +77,15 @@ impl VotingContract {
     }
 
     /// Create a new governance proposal.
+    /// Create a new governance proposal.
+    ///
+    /// # Authorization
+    /// Requires authentication from the proposer.
+    ///
+    /// # Events
+    /// Emits `proposal_created` with `(id, proposer)`.
+    ///
+    /// Returns the newly created proposal ID.
     pub fn create_proposal(
         env: Env,
         proposer: Address,
@@ -117,6 +138,17 @@ impl VotingContract {
     }
 
     /// Member casts a vote on a proposal.
+    /// Cast a vote on an active proposal.
+    ///
+    /// # Authorization
+    /// Requires authentication from the voter.
+    ///
+    /// # Panics
+    /// Panics if the proposal is not active, the voting deadline has passed,
+    /// or the voter has already voted.
+    ///
+    /// # Events
+    /// Emits `vote_cast` with `(proposal_id, voter, approve)`.
     pub fn vote(env: Env, voter: Address, proposal_id: u32, approve: bool) {
         voter.require_auth();
 
@@ -159,6 +191,17 @@ impl VotingContract {
     }
 
     /// Finalize a proposal after deadline.
+    /// Finalize a proposal once its voting deadline has passed.
+    ///
+    /// Read-only auth: anyone may call; state transition depends on votes and quorum.
+    ///
+    /// # Panics
+    /// Panics if the proposal is not active or the deadline has not yet passed.
+    ///
+    /// # Events
+    /// Emits `proposal_finalized` with `(proposal_id, status)`.
+    ///
+    /// Returns the resulting [`ProposalStatus`].
     pub fn finalize(env: Env, proposal_id: u32) -> ProposalStatus {
         let mut proposals: Vec<Proposal> = env.storage().instance()
             .get(&DataKey::Proposals).unwrap();

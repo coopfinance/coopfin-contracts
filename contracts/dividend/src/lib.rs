@@ -1,5 +1,11 @@
 #![no_std]
 
+//! Dividend distribution contract.
+//!
+//! Distributes cooperative profits proportionally among members based on share
+//! weight. Distributions are recorded on-chain and funds are transferred from
+/// the linked treasury contract.
+
 use soroban_sdk::{
     contract, contractimpl, contracttype, token, Address, Env, Symbol, Vec,
 };
@@ -31,6 +37,12 @@ pub struct DividendContract;
 
 #[contractimpl]
 impl DividendContract {
+    /// Initialize the dividend contract and link it to the asset and treasury.
+    ///
+    /// # Authorization
+    /// Requires caller authentication as the admin.
+    ///
+    /// Returns nothing; state is set directly.
     pub fn initialize(env: Env, admin: Address, asset: Address, treasury: Address) {
         admin.require_auth();
         env.storage().instance().set(&DataKey::Admin, &admin);
@@ -45,6 +57,19 @@ impl DividendContract {
     ///
     /// `recipients` and `shares` must be equal length.
     /// Each member receives: `profit * (member_shares / total_shares)`
+    /// Distribute profit proportionally across recipients by share weight.
+    ///
+    /// # Authorization
+    /// Requires authentication from the admin.
+    ///
+    /// # Panics
+    /// Panics if `recipients` and `shares` differ in length, if `total_profit`
+    /// is not positive, or if the total share weight is zero.
+    ///
+    /// # Events
+    /// Emits `dividend_distributed` with `(id, total_profit, recipient_count)`.
+    ///
+    /// Returns the distribution ID.
     pub fn distribute(
         env: Env,
         admin: Address,

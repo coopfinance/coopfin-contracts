@@ -1,5 +1,11 @@
 #![no_std]
 
+//! Member loan contract.
+//!
+//! Tracks loan requests, approvals, disbursements, and repayments for a
+//! cooperative. Loans are funded from the linked treasury contract once a
+//! pending request is approved by the admin or governance.
+
 use soroban_sdk::{
     contract, contractimpl, contracttype, token, Address, Env, Symbol, Vec, String,
 };
@@ -44,6 +50,15 @@ pub struct LoanContract;
 
 #[contractimpl]
 impl LoanContract {
+    /// Initialize the loan contract and link it to the treasury and asset.
+    ///
+    /// # Authorization
+    /// Requires caller authentication as the contract admin.
+    ///
+    /// # Panics
+    /// Panics if the contract has already been initialized.
+    ///
+    /// Returns nothing; state is set directly.
     pub fn initialize(env: Env, admin: Address, treasury: Address, asset: Address) {
         admin.require_auth();
         if env.storage().instance().has(&DataKey::Admin) {
@@ -57,6 +72,18 @@ impl LoanContract {
     }
 
     /// Member submits a loan request.
+    /// Member submits a loan request.
+    ///
+    /// # Authorization
+    /// Requires authentication from the borrowing member.
+    ///
+    /// # Panics
+    /// Panics if `amount` is not positive.
+    ///
+    /// # Events
+    /// Emits `loan_requested` with `(id, borrower, amount)`.
+    ///
+    /// Returns the newly created loan ID.
     pub fn request_loan(
         env: Env,
         borrower: Address,
@@ -101,6 +128,16 @@ impl LoanContract {
     }
 
     /// Admin (or governance contract) approves a loan and disburses funds.
+    /// Approve a pending loan and disburse funds from the treasury.
+    ///
+    /// # Authorization
+    /// Requires authentication from the contract admin.
+    ///
+    /// # Panics
+    /// Panics if the caller is not the admin or if the loan is not in `Pending` status.
+    ///
+    /// # Events
+    /// Emits `loan_approved` with `(loan_id, borrower, amount)`.
     pub fn approve_loan(env: Env, admin: Address, loan_id: u32) {
         admin.require_auth();
         Self::require_admin(&env, &admin);
@@ -136,6 +173,16 @@ impl LoanContract {
     }
 
     /// Borrower repays (partial or full).
+    /// Repay part or all of an approved loan.
+    ///
+    /// # Authorization
+    /// Requires authentication from the borrower.
+    ///
+    /// # Panics
+    /// Panics if the caller is not the loan borrower or if the loan is not active.
+    ///
+    /// # Events
+    /// Emits `loan_repaid` with `(loan_id, borrower, amount, status)`.
     pub fn repay(env: Env, borrower: Address, loan_id: u32, amount: i128) {
         borrower.require_auth();
 
@@ -173,6 +220,11 @@ impl LoanContract {
     }
 
     /// Get all loans.
+    /// Get all loans.
+    ///
+    /// Read-only — no auth required.
+    ///
+    /// Returns a vector of [`Loan`] records.
     pub fn get_loans(env: Env) -> Vec<Loan> {
         env.storage().instance()
             .get(&DataKey::Loans)
@@ -180,6 +232,14 @@ impl LoanContract {
     }
 
     /// Get a single loan by ID.
+    /// Get a single loan by ID.
+    ///
+    /// Read-only — no auth required.
+    ///
+    /// # Panics
+    /// Panics if no loan with the given ID exists.
+    ///
+    /// Returns the matching [`Loan`].
     pub fn get_loan(env: Env, loan_id: u32) -> Loan {
         let loans: Vec<Loan> = env.storage().instance()
             .get(&DataKey::Loans).unwrap();
