@@ -1,54 +1,98 @@
+//! Voting contract for Soroban-based cooperative governance.
+//!
+//! Manages on-chain governance proposals for the cooperative, including
+//! creation, voting, and finalization. Members vote directly on proposals;
+//! proposals pass when they reach a quorum and have more votes in favor
+//! than against.
+//!
+//! The contract is `no_std` and Soroban-targeted.
+//!
+//! # Events
+//!
+//! - `proposal_created` — emitted when a new proposal is registered.
+//! - `vote_cast` — emitted when a member casts a vote.
+//! - `proposal_finalized` — emitted when a proposal's status is finalized.
+
 #![no_std]
 
-use soroban_sdk::{
-    contract, contractimpl, contracttype, Address, Env, Map, Symbol, Vec, String,
-};
+use soroban_sdk::{contract, contractimpl, contracttype, Address, Env, Map, Symbol, Vec, String};
 
+/// Storage keys for the voting contract.
 #[contracttype]
 #[derive(Clone)]
 pub enum DataKey {
+    /// The admin address (set at initialization).
     Admin,
+    /// Address of the treasury contract this voting module is tied to.
     TreasuryContract,
+    /// Persistent vector of all proposals.
     Proposals,
+    /// Monotonically increasing proposal counter.
     ProposalCounter,
-    Votes(u32), // proposal_id -> Map<Address, bool>
+    /// Vote map for a given proposal ID: `Address -> bool` (true = approve).
+    Votes(u32),
 }
 
+/// Lifecycle status of a governance proposal.
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
 pub enum ProposalStatus {
+    /// Proposal is open for voting.
     Active,
+    /// Proposal reached quorum and more votes in favor than against.
     Passed,
+    /// Proposal failed to reach quorum or majority.
     Failed,
+    /// Proposal has been executed.
     Executed,
 }
 
+/// The kind of action a proposal represents.
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
 pub enum ProposalType {
-    LoanApproval,    // Approve a member loan
-    TreasurySpend,   // Authorize a treasury withdrawal
-    AddMember,       // Add a new member to the coop
-    RemoveMember,    // Remove a member from the coop
-    UpdateRule,      // Change a group rule (interest rate, contrib amount, etc.)
-    General,         // General governance proposal
+    /// Approve a member loan.
+    LoanApproval,
+    /// Authorize a treasury withdrawal.
+    TreasurySpend,
+    /// Add a new member to the coop.
+    AddMember,
+    /// Remove a member from the coop.
+    RemoveMember,
+    /// Change a group rule (interest rate, contrib amount, etc.).
+    UpdateRule,
+    /// General governance proposal.
+    General,
 }
 
+/// A single governance proposal.
 #[contracttype]
 #[derive(Clone, Debug)]
 pub struct Proposal {
+    /// Unique proposal identifier.
     pub id: u32,
+    /// The member who created the proposal.
     pub proposer: Address,
+    /// The category of this proposal.
     pub proposal_type: ProposalType,
+    /// Short title of the proposal.
     pub title: String,
+    /// Human-readable description of the proposal.
     pub description: String,
+    /// Number of votes cast in favor.
     pub votes_for: u32,
+    /// Number of votes cast against.
     pub votes_against: u32,
-    pub quorum: u32,          // Minimum votes required
-    pub deadline: u64,        // Ledger timestamp
+    /// Minimum number of votes required for the proposal to be valid.
+    pub quorum: u32,
+    /// Ledger timestamp deadline for voting.
+    pub deadline: u64,
+    /// Current status of the proposal.
     pub status: ProposalStatus,
+    /// Ledger timestamp when the proposal was created.
     pub created_at: u64,
-    pub payload: String,      // JSON-encoded action payload
+    /// JSON-encoded action payload for the proposal.
+    pub payload: String,
 }
 
 #[contract]
